@@ -1,0 +1,22 @@
+# Runtime dependencies verified on Windows x64 / Python 3.14.
+# Install into the project virtual environment (see README.md).
+keyboard==0.13.5
+pywebview==6.2.1
+pystray==0.19.5
+pillow==12.3.0
+requests==2.34.2
+curl_cffi==0.16.3
+httpx==0.28.1
+python-dotenv==1.2.3
+playwright==1.62.0
+opencv-python==5.0.0.93
+pypdf==6.16.2
+openpyxl==3.1.5
+python-docx==1.2.0
+pillow-heif==1.5.0
+faster-whisper==1.2.1
+lancedb==0.40.0
+fastembed==0.9.0
+trafilatura==2.3.1
+pydantic==2.13.5
+pyarrow==26.0.0

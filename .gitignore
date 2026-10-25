@@ -1,0 +1,28 @@
+# Пользовательские секреты и рабочие данные
+config.json
+*.tmp
+error.log
+.env
+.env.*
+!.env.example
+.backups/
+history/
+generated_files/
+presets/
+notes.json
+retrieval_metrics.json
+sessions_history.json
+sessions_meta.json
+*.log
+
+# Кэши и сборочные артефакты (пересоздаются автоматически)
+__pycache__/
+*.pyc
+.next/
+.venv/
+node_modules/
+tsconfig.tsbuildinfo
+.ruff_cache/
+
+# Личные данные хранятся в AppData; старые локальные копии тоже исключаем.
+data/

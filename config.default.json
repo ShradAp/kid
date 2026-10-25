@@ -1,0 +1,39 @@
+{
+  "active_profile": "main",
+  "profiles": {
+    "main": {
+      "base_url": "https://openrouter.ai/api/v1",
+      "model": "",
+      "api_key": "",
+      "api_key_env": "",
+      "search_api_key": "",
+      "system_prompt": "",
+      "request_timeout": 120,
+      "temperature": 0.7,
+      "search_results": 5,
+      "thinking_budget": 0,
+      "max_steps": 60
+    }
+  },
+  "hotkey": "ctrl+shift+space",
+  "hotkey_alt": "ctrl+`",
+  "max_history_messages": 20,
+  "search_enabled": false,
+  "window_geometry": "",
+  "skip_search_on_smalltalk": true,
+  "proxy_mode": "auto",
+  "proxy_url": "",
+  "proxy_user": "",
+  "proxy_pass": "",
+  "proxy_timezone": "Europe/Tallinn",
+  "proxy_locale": "et-EE",
+  "proxy_accept_language": "",
+  "document_studio": {
+    "base_url": "",
+    "api_key": "",
+    "model": "",
+    "system_prompt": "",
+    "temperature": null,
+    "request_timeout": 0
+  }
+}

@@ -1,0 +1,11 @@
+services:
+  searxng:
+    image: searxng/searxng:latest
+    container_name: searxng
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      - SEARXNG_SECRET=${SEARXNG_SECRET:?Set SEARXNG_SECRET in your private environment file}
+    volumes:
+      - ./settings.yml:/etc/searxng/settings.yml:ro
+    restart: unless-stopped

@@ -1,0 +1,19 @@
+# SearXNG — минимальная конфигурация для локального поиска в проекте kid.
+# Ключевое: включён JSON-формат выдачи, который используют search_tools и tunnel
+# (запросы идут с параметром format=json).
+use_default_settings: true
+
+server:
+  # Обязательный SEARXNG_SECRET передаётся из приватного .env через Compose.
+  base_url: http://localhost:8080/
+  # Лимитер (bot protection) требует Redis — отключаем для одиночного контейнера.
+  limiter: false
+  # Проксирование картинок не нужно — отключаем (меньше SSRF-рисков).
+  image_proxy: false
+
+search:
+  # ВАЖНО: JSON по умолчанию ВЫКЛЮЧЕН. Код приложения ходит с format=json,
+  # поэтому json обязан быть в списке разрешённых форматов.
+  formats:
+    - html
+    - json
