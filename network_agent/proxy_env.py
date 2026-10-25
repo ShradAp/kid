@@ -192,6 +192,18 @@ def is_proxy_error(text: str) -> bool:
     return any(marker.lower() in t for marker in PROXY_ERROR_MARKERS)
 
 
+def redact_proxy_url(value: str) -> str:
+    """Log the endpoint without exposing credentials embedded in its URL."""
+    try:
+        parsed = urlparse(value)
+        host = parsed.hostname or ""
+        if ":" in host:
+            host = f"[{host}]"
+        return f"{parsed.scheme}://{host}" + (f":{parsed.port}" if parsed.port else "")
+    except ValueError:
+        return "[proxy]"
+
+
 def resolve_working_proxy(configured: str = "", log_cb=None) -> str:
     """Возвращает РАБОЧИЙ прокси или '' (прямой доступ).
 
@@ -220,11 +232,11 @@ def resolve_working_proxy(configured: str = "", log_cb=None) -> str:
         if _tcp_probe(candidate, 1.5):
             ok, why = _http_verify(candidate)
             if ok:
-                _log(f"🌐 Прокси: используется {candidate} (проверен запросом)")
+                _log(f"🌐 Прокси: используется {redact_proxy_url(candidate)} (проверен запросом)")
                 return candidate
-            _log(f"⚠️ Прокси: {candidate} непригоден ({why})")
+            _log(f"⚠️ Прокси: {redact_proxy_url(candidate)} непригоден ({why})")
         else:
-            _log(f"⚠️ Прокси: {candidate} не отвечает (порт закрыт)")
+            _log(f"⚠️ Прокси: {redact_proxy_url(candidate)} не отвечает (порт закрыт)")
     if tried:
         _log("🌐 Прокси: рабочие адреса не найдены — прямой доступ")
     else:

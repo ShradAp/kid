@@ -27,11 +27,14 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "web_search",
-            "description": "Веб-поиск фактов и ссылок с ранжированием источников.",
+            "description": "Исследование в интернете: несколько раундов поиска, уточнение запросов, переход по страницам выдачи и чтение источников в пределах бюджета. Возвращает ссылки, фрагменты и ограничения поиска.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "Запрос"}
+                    "query": {"type": "string", "description": "Запрос"},
+                    "objective": {"type": "string", "description": "Что именно требуется выяснить: объект, конкретные вопросы, важные ограничения из диалога. Краткое самостоятельное задание исследователю."},
+                    "sources": {"type": "array", "description": "До 4 полезных направлений; общий веб ищется всегда. Не перечисляй все. Пустой список — только веб. Если опущено, направления выбираются по запросу.",
+                                "maxItems": 4, "items": {"type": "string", "enum": ["articles", "forums", "youtube", "telegram", "vk", "tiktok", "reviews", "technical", "apps", "pikabu"]}}
                 },
                 "required": ["query"],
             },

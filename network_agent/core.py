@@ -5,9 +5,7 @@
 
 from __future__ import annotations
 
-import asyncio
 import base64
-import concurrent.futures
 import html as html_mod
 import logging
 import re
@@ -45,19 +43,9 @@ def _resolve_impersonate_target() -> str:
 
 IMPERSONATE_TARGET = _resolve_impersonate_target()
 
-# TTL-кэш: страницы и выдача поиска переиспользуются в рамках сессии
+# TTL-кэш прочитанных страниц
 _CACHE_TTL_PAGES = 600  # секунд на страницу (10 мин)
-_CACHE_TTL_SEARCH = 180  # секунд на выдачу поиска (3 мин)
 _CACHE_MAX_ENTRIES = 200
-
-# Черный список доменов-паразитов для поисковой выдачи
-IGNORED_SEARCH_DOMAINS = {
-    "pinterest.com",
-    "pinterest.ru",
-    "otzovik.com",
-    "irecommend.ru",
-    "sravni.ru",
-}
 
 # Единственный критерий успеха быстрого пути — минимальная длина очищенного
 # ТЕЛА страницы. Заголовок и Open Graph на решение больше не влияют.
@@ -101,6 +89,8 @@ def _extract_content(raw, url, encoding="utf-8"):
     if trafilatura is not None:
         try:
             result = trafilatura.bare_extraction(raw, url=url)
+            if result is not None and not isinstance(result, dict):
+                result = {key: getattr(result, key, None) for key in ("text", "title", "description", "image")}
             if isinstance(result, dict):
                 text = (result.get("text") or "").strip()
                 title = (result.get("title") or "").strip()
@@ -382,7 +372,9 @@ class NetworkAgentCore:
             "title": title,
             "description": description,
             "main_image": main_image,
-            "text_content": text[:20000],
+            "text_content": text[:100000],
+            "source_truncated": len(text) > 100000,
+            "extracted_chars": len(text),
             "fast_path": True,
         }
 
@@ -534,6 +526,20 @@ class NetworkAgentCore:
         грузилась всегда и съедала до 10 с на страницах с тяжёлыми изображениями,
         хотя текстовому инструменту она не нужна.
         """
+        from public_sources import read_public
+        public = read_public(url)
+        if public is not None:
+            if public.get("error"):
+                return f"Публичный материал не прочитан ({public['error']}). Источник: {url}"
+            from search_tools import format_search_block
+            kind = public.get("content_kind", "metadata")
+            return format_search_block([{**public, "body": public.get("text_content", ""),
+                "read_status": "metadata_only" if kind in ("metadata", "video_description") else "read"}])
+        from discussion_reader import read_discussion
+        discussion = read_discussion(url)
+        if discussion and discussion.get("text_content"):
+            from search_tools import format_search_block
+            return format_search_block([{**discussion, "body": discussion["text_content"], "read_status": "read"}])
         data = self._get_page_data(url)
         summary = self.format_page_summary(data)
         if with_media:
@@ -544,113 +550,22 @@ class NetworkAgentCore:
 
     # ==================== ПОИСК И АГРЕГАЦИЯ ====================
 
-    def _filter_search_results(
-        self, results: list[dict[str, Any]]
-    ) -> list[dict[str, Any]]:
-        """Фильтрация мусора, дубликатов и SEO-ферм из поисковой выдачи."""
-        clean_results = []
-        seen_hosts = set()
-
-        for item in results:
-            url = item.get("url", "")
-            if not url:
-                continue
-
-            try:
-                host = (urlparse(url).hostname or "").lower()
-            except Exception:
-                continue
-
-            if any(host == d or host.endswith("." + d) for d in IGNORED_SEARCH_DOMAINS):
-                continue
-
-            domain_count = sum(1 for h in seen_hosts if h == host)
-            if domain_count >= 2:
-                continue
-
-            seen_hosts.add(host)
-            clean_results.append(item)
-
-        return clean_results
-
     def search_and_summarize(
-        self,
-        query: str,
-        max_results: int = 5,
-        deep_scrape_top: int = 2,
+        self, query: str, max_results: int = 5, deep_scrape_top: int = 2,
+        *, budget=None, cancel_event=None, progress=None,
     ) -> str:
-        """
-        Глубокий поиск: SearXNG (фолбэк — Serper) -> Очистка мусора -> ПАРАЛЛЕЛЬНАЯ
-        дочитка топ-страниц (прокси → напрямую → скип). Результат кэшируется на 3 минуты.
-        """
-        cache_key = f"search:{query}:{max_results}:{deep_scrape_top}"
-        cached = self._cache_get(cache_key, _CACHE_TTL_SEARCH)
-        if cached is not None:
-            return cached
+        """Compatibility entry point using the shared research orchestrator."""
+        from search_tools import web_search, format_search_block
+        from research_search import SearchBudget
 
-        logger.info(f"Запуск веб-поиска: {query}")
-        raw_results = self.tunnel.searxng_search(
-            query=query, searxng_url=self.searxng_url
+        if budget is None:
+            budget = SearchBudget(max_reads=max(0, min(12, int(deep_scrape_top))))
+        results, error = web_search(
+            query, max_results=max_results, budget=budget,
+            cancel_event=cancel_event, progress=progress,
+            reader=self._get_page_data, searxng_url=self.searxng_url,
         )
-        if not raw_results:
-            # SearXNG не запущен/не ответил — страховка через Serper напрямую
-            # (без повторного SearXNG и без обогащения — дочитка идёт ниже).
-            try:
-                from search_tools import _serper_search
-
-                raw_results = [
-                    r for r in _serper_search(query, max_results * 2, "ru")
-                    if r.get("url")
-                ]
-                if raw_results:
-                    logger.info(f"SearXNG пуст, Serper дал {len(raw_results)} результатов")
-            except Exception as e:
-                logger.warning(f"Serper fallback не удался: {e}")
-        filtered = self._filter_search_results(raw_results)[:max_results]
-
-        if not filtered:
-            return "🔍 По вашему запросу в интернете ничего не найдено."
-
-        # Дочитка первых страниц ПАРАЛЛЕЛЬНО (раньше — строго по очереди)
-        targets = [
-            (i, item.get("url", ""))
-            for i, item in enumerate(filtered)
-            if i < deep_scrape_top and item.get("url")
-        ]
-        page_texts: dict[int, str] = {}
-
-        def _read(index_url: tuple[int, str]):
-            i, page_url = index_url
-            data = self.fetch_with_fallback(page_url)
-            text = data.get("text_content", "") or data.get("description", "")
-            return i, text
-
-        if targets:
-            with concurrent.futures.ThreadPoolExecutor(
-                max_workers=min(len(targets), 4)
-            ) as executor:
-                for i, text in executor.map(_read, targets):
-                    if text:
-                        page_texts[i] = re.sub(r"\s+", " ", text).strip()[:1000]
-
-        output = [f"### Результаты поиска по запросу: «{query}»\n"]
-        for i, item in enumerate(filtered):
-            title = item.get("title", "Без названия")
-            url = item.get("url", "")
-            snippet = item.get("content", "") or item.get("body", "")
-
-            output.append(f"**[{i + 1}] {title}**\nСсылка: {url}")
-
-            if i in page_texts:
-                output.append(f"Выжимка со страницы:\n_{page_texts[i]}_\n")
-            elif snippet:
-                output.append(f"Сниппет: {snippet}\n")
-
-            output.append("---")
-
-        result = "\n".join(output)
-        self._cache_set(cache_key, result, _CACHE_TTL_SEARCH)
-        return result
+        return format_search_block(results) or error or "Поиск не дал результатов."
 
     def close(self) -> None:
         """Очистка ресурсов (браузер останавливается через его постоянный цикл)."""

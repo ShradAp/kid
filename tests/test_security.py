@@ -134,6 +134,17 @@ class BridgeTests(unittest.TestCase):
         path = quote(str(self.user_dir / "config.json"))
         self.assertEqual(self.request("/api/download-local?path=" + path)[0], 404)
 
+    def test_research_mode_persists_without_changing_search_key(self):
+        original = self.app.load_config()["search_api_key"]
+        for mode in ("isolated", "adaptive"):
+            self.assertEqual(self.request("/api/search-settings", method="POST", data={"search_research_mode": mode})[0], 200)
+            cfg = self.app.load_config()
+            self.assertEqual(cfg["search_research_mode"], mode)
+            self.assertEqual(cfg["search_api_key"], original)
+            self.assertEqual(json.loads(self.request("/api/init")[2])["search_research_mode"], mode)
+        self.assertEqual(self.request("/api/search-settings", method="POST", data={"search_research_mode": "unknown"})[0], 400)
+        self.assertEqual(self.app.load_config()["search_research_mode"], "adaptive")
+
     def test_normal_chat_still_works_and_legacy_flags_do_not_enable_code_execution(self):
         with patch.object(self.app, "user_profile_memory", None), patch.object(
             self.app.api_client, "call_chat_api", return_value={"content": "mock-chat-reply"}

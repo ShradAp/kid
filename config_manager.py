@@ -349,6 +349,8 @@ def _default_config() -> dict:
 
 
 def _ensure_profile_fields(config: dict) -> dict:
+    from research_controller import normalize_mode
+    config["search_research_mode"] = normalize_mode(config.get("search_research_mode"))
     profiles = config.get("profiles")
     if not isinstance(profiles, dict) or not profiles:
         profiles = {"main": {}}

@@ -5,6 +5,9 @@ pywebview==6.2.1
 pystray==0.19.5
 pillow==12.3.0
 requests==2.34.2
+PySocks==1.7.1
+youtube-transcript-api==1.2.4
+yt-dlp==2026.10.21
 curl_cffi==0.16.3
 httpx==0.28.1
 python-dotenv==1.2.3

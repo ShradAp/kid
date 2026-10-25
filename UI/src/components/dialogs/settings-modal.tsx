@@ -107,6 +107,9 @@ export function SettingsModal({
   const [searchApiKey, setSearchApiKey] = useState("");
   const [hasSearchApiKey, setHasSearchApiKey] = useState(false);
   const [searchSaveMessage, setSearchSaveMessage] = useState("");
+  const [researchMode, setResearchMode] = useState("adaptive");
+  const [researchModeSaving, setResearchModeSaving] = useState(false);
+  const [researchModeMessage, setResearchModeMessage] = useState("");
   const [proxyMode, setProxyMode] = useState("auto");
   const [proxyUrl, setProxyUrl] = useState("");
   const [proxyUser, setProxyUser] = useState("");
@@ -127,9 +130,10 @@ export function SettingsModal({
     if (!open) return;
     fetch("/api/init")
       .then((response) => response.json())
-      .then((data: { search_api_key?: string; has_search_api_key?: boolean }) => {
+      .then((data: { search_api_key?: string; has_search_api_key?: boolean; search_research_mode?: string }) => {
         setSearchApiKey(data.search_api_key ?? "");
         setHasSearchApiKey(Boolean(data.has_search_api_key));
+        setResearchMode(data.search_research_mode === "isolated" ? "isolated" : "adaptive");
       })
       .catch(() => setSearchSaveMessage("Could not load"));
     // Настройки прокси (вкладка «Прокси»)
@@ -221,6 +225,25 @@ export function SettingsModal({
       setSearchApiKey("");
     } catch {
       setSearchSaveMessage("Could not save");
+    }
+  }
+
+  async function handleResearchMode(value: string) {
+    setResearchModeSaving(true);
+    setResearchModeMessage("");
+    try {
+      const response = await fetch("/api/search-settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ search_research_mode: value }),
+      });
+      if (!response.ok) throw new Error("server error");
+      setResearchMode(value);
+      setResearchModeMessage("Режим сохранён. Применится к следующему поиску.");
+    } catch {
+      setResearchModeMessage("Не удалось сохранить режим");
+    } finally {
+      setResearchModeSaving(false);
     }
   }
 
@@ -457,6 +480,22 @@ export function SettingsModal({
             onToggle={setOpenSection}
           >
             <FieldGroup>
+              <Field>
+                <FieldLabel>Режим исследования</FieldLabel>
+                <Select value={researchMode} onValueChange={(value) => { if (value) void handleResearchMode(value); }} disabled={researchModeSaving}>
+                  <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="adaptive">Адаптивный — по умолчанию</SelectItem>
+                    <SelectItem value="isolated">Отдельный оценщик</SelectItem>
+                  </SelectContent>
+                </Select>
+                <FieldDescription>
+                  {researchMode === "adaptive"
+                    ? "Исследователь сохраняет историю шагов, оценивает материалы и ищет ответы на оставшиеся вопросы."
+                    : "Каждую порцию материалов оценивает новый вызов той же модели: только задание, компактная память и результаты поиска."}
+                </FieldDescription>
+                {researchModeMessage && <p className="text-xs text-muted-foreground">{researchModeMessage}</p>}
+              </Field>
               <Field>
                 <FieldLabel>
                   <Search className="size-3.5 text-muted-foreground" data-icon="inline-start" />

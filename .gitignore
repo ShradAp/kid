@@ -11,6 +11,7 @@ generated_files/
 presets/
 notes.json
 retrieval_metrics.json
+/reports/*.json
 sessions_history.json
 sessions_meta.json
 *.log

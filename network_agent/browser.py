@@ -574,7 +574,10 @@ UNIVERSAL_EXTRACTOR_JS = """
     ['script', 'style', 'noscript', 'svg', 'iframe', 'header', 'footer', 'nav'].forEach(tag => {
         clones.querySelectorAll(tag).forEach(el => el.remove());
     });
-    result.text_content = (clones.innerText || "").replace(/\\n{3,}/g, '\\n\\n').trim().slice(0, 5000);
+    const extractedText = (clones.innerText || "").replace(/\\n{3,}/g, '\\n\\n').trim();
+    result.text_content = extractedText.slice(0, 100000);
+    result.source_truncated = extractedText.length > 100000;
+    result.extracted_chars = extractedText.length;
 
     return result;
 }

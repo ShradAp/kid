@@ -2077,6 +2077,7 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                 "active_profile": active_profile_key,
                 "search_api_key": "",
                 "has_search_api_key": bool(cfg.get("search_api_key")),
+                "search_research_mode": cfg.get("search_research_mode", "adaptive"),
                 # Последний открытый чат — восстанавливается фронтендом после рестарта.
                 "active_session": str(cfg.get("last_active_session") or ""),
                 "personas": personas,
@@ -2603,6 +2604,11 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                     raise ValueError("Некорректные настройки поиска")
                 cfg = load_config()
                 cfg["search_api_key"] = retained_secret(incoming.get("search_api_key"), cfg.get("search_api_key"), incoming.get("clear_search_api_key"))
+                if "search_research_mode" in incoming:
+                    from research_controller import MODES
+                    if incoming["search_research_mode"] not in MODES:
+                        raise ValueError("Неизвестный режим исследования")
+                    cfg["search_research_mode"] = incoming["search_research_mode"]
                 save_config(cfg)
                 self._set_cors()
                 self.wfile.write(json.dumps({"ok": True}, ensure_ascii=False).encode("utf-8"))
@@ -3479,6 +3485,12 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                                     query,
                                     max_results=int(profile.get("search_results", 5) or 5),
                                     region=str(profile.get("search_region", "ru-ru") or "ru-ru"),
+                                    cancel_event=cancel_event,
+                                    progress=thinking_steps.append,
+                                    planner=search_tools.make_research_planner(profile,
+                                        mode=load_config().get("search_research_mode", "adaptive"),
+                                        objective=fn_args.get("objective") or query),
+                                    sources=fn_args.get("sources"),
                                 )
                                 if search_results:
                                     tool_output = (
