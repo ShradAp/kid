@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { toast } from "sonner";
 import { ThinkingAccordion } from "@/components/chat/thinking-accordion";
+import { ActionTimeline } from "@/components/chat/action-timeline";
 import { MarketplaceCard } from "@/components/chat/marketplace-card";
 import { Paperclip, Plus } from "lucide-react";
 import {
@@ -795,7 +796,7 @@ function MessageAttachments({
   );
 }
 
-export function ChatMessage({ message }: { message: Message }) {
+export function ChatMessage({ message, streaming = false }: { message: Message; streaming?: boolean }) {
   if (message.role === "user") {
     return (
       <div className="ml-auto flex max-w-[80%] flex-col items-end gap-1 select-text">
@@ -814,8 +815,10 @@ export function ChatMessage({ message }: { message: Message }) {
 
   return (
     <div className="flex max-w-[85%] flex-col gap-1 select-text">
-      <div className="rounded-2xl border border-white/10 bg-card p-4 space-y-1 select-text cursor-text">
-        {(message.thinking || message.reasoning) && (
+      {message.activity && !streaming && <ActionTimeline steps={message.thinking ?? []} reasoning={message.reasoning}
+        durationMs={message.activity.duration_ms} interrupted={message.activity.status === "interrupted"} />}
+      <div className={message.activity ? "space-y-3 select-text cursor-text" : "rounded-2xl border border-white/10 bg-card p-4 space-y-1 select-text cursor-text"}>
+        {!message.activity && (message.thinking || message.reasoning) && (
           <ThinkingAccordion
             steps={message.thinking ?? []}
             reasoning={message.reasoning}

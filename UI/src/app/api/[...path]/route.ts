@@ -1,4 +1,6 @@
 import type { NextRequest } from "next/server";
+import { request as requestLoopback, type IncomingMessage } from "node:http";
+import { Readable } from "node:stream";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -49,20 +51,26 @@ async function proxy(request: NextRequest) {
   const contentType = request.headers.get("content-type");
   if (contentType) headers.set("Content-Type", contentType);
   try {
-    const response = await fetch(`http://127.0.0.1:5000${url.pathname}${url.search}`, {
-      method: request.method,
-      headers,
-      body: body as BodyInit | undefined,
-      redirect: "manual",
-      cache: "no-store",
-      signal: request.signal,
+    const port = Number(process.env.KID_BRIDGE_PORT ?? 5000);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("Invalid local bridge port");
+    // Human approvals can outlast fetch/undici's response-header deadline.
+    const response = await new Promise<IncomingMessage>((resolve, reject) => {
+      const upstream = requestLoopback({hostname:"127.0.0.1", port, path:`${url.pathname}${url.search}`,
+        method:request.method, headers:Object.fromEntries(headers)}, resolve);
+      upstream.on("error", reject);
+      const abort = () => upstream.destroy(new Error("Client disconnected"));
+      request.signal.addEventListener("abort", abort, {once:true});
+      upstream.on("close", () => request.signal.removeEventListener("abort", abort));
+      upstream.setTimeout(0);
+      if (request.signal.aborted) abort();
+      else upstream.end(body);
     });
     const outgoing = new Headers({ "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" });
     for (const name of ["content-type", "content-disposition"]) {
-      const value = response.headers.get(name);
-      if (value) outgoing.set(name, value);
+      const value = response.headers[name];
+      if (typeof value === "string") outgoing.set(name, value);
     }
-    return new Response(response.body, { status: response.status, headers: outgoing });
+    return new Response(Readable.toWeb(response) as ReadableStream, { status: response.statusCode ?? 502, headers: outgoing });
   } catch {
     return Response.json({ error: "Local backend is unavailable" }, { status: 502 });
   }

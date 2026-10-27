@@ -25,6 +25,7 @@ import {
   FieldDescription,
 } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { SecretInput } from "@/components/ui/secret-input";
 import { Slider } from "@/components/ui/slider";
 import { Button } from "@/components/ui/button";
 import {
@@ -504,13 +505,8 @@ export function SettingsModal({
                 <FieldDescription>
                   Serper используется для веб-поиска. Ключ общий для всех профилей; изменения применяются кнопкой сохранения.
                 </FieldDescription>
-                <Input
-                  type="password"
-                  value={searchApiKey}
-                  onChange={(event) => setSearchApiKey(event.target.value)}
-                  placeholder={hasSearchApiKey ? "Ключ сохранён. Введите новый для замены" : "Search API key"}
-                  autoComplete="off"
-                />
+                <SecretInput label="Search API key" value={searchApiKey} saved={hasSearchApiKey}
+                  onChange={setSearchApiKey} reveal={{field:"search_api_key"}} />
                 {searchSaveMessage && <p className="text-xs text-muted-foreground">{searchSaveMessage}</p>}
                 <div className="flex gap-2">
                   <Button type="button" size="sm" onClick={() => void handleSaveSearchApiKey(searchApiKey)}>Сохранить ключ</Button>
@@ -584,13 +580,9 @@ export function SettingsModal({
                         placeholder="логин"
                         autoComplete="off"
                       />
-                      <Input
-                        type="password"
-                        value={proxyPass}
-                        onChange={(event) => { setProxyPass(event.target.value); setClearProxyPass(false); }}
-                        placeholder={hasProxyPass && !clearProxyPass ? "Пароль сохранён" : "Пароль"}
-                        autoComplete="off"
-                      />
+                      <SecretInput label="Пароль общего прокси" value={proxyPass} cleared={clearProxyPass}
+                        saved={hasProxyPass && !clearProxyPass} reveal={{field:"proxy_password"}}
+                        onChange={(password) => { setProxyPass(password); setClearProxyPass(false); }} />
                     </div>
                   </Field>
                 </>

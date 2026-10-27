@@ -23,6 +23,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import type { ChatSession, Persona } from "@/lib/assistant-data";
+import { profileColor } from "@/lib/profile-colors";
 
 export function SidebarDrawer({
   open,
@@ -40,6 +41,7 @@ export function SidebarDrawer({
   onNewChat,
   onDeleteSession,
   onOpenSettings,
+  useProfileAccents = true,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -56,6 +58,7 @@ export function SidebarDrawer({
   onNewChat: (personaId?: string) => void;
   onDeleteSession?: (id: string) => void;
   onOpenSettings: () => void;
+  useProfileAccents?: boolean;
 }) {
   const activePersona = personas.find((p) => p.id === activePersonaId);
   const [chatMenuPersonaId, setChatMenuPersonaId] = useState<string | null>(null);
@@ -85,16 +88,21 @@ export function SidebarDrawer({
         <SheetHeader className="border-b border-white/10 px-4 py-4 pr-12">
           <SheetTitle className="sr-only">Assistant menu</SheetTitle>
           <div className="flex flex-col items-stretch gap-1">
-            {personas.map((persona) => (
-              <div key={persona.id} className="flex w-full items-center gap-0.5">
+            {personas.map((persona, index) => {
+              const accent = profileColor(persona.color, index).hex;
+              const active = persona.id === activePersonaId;
+              return <div key={persona.id} role="group" aria-label={`Профиль ${persona.name}`}
+                data-profile-id={persona.id} data-active={active}
+                className={cn("flex items-center gap-0.5", useProfileAccents ? "w-fit rounded-full border border-transparent p-1 transition-colors" : "w-full")}
+                style={useProfileAccents && active ? { borderColor: `${accent}80`, backgroundColor: `${accent}12` } : undefined}>
                 <Tooltip>
-                  <TooltipTrigger render={<Button variant="ghost" size="icon" className={cn("size-11 rounded-full bg-primary/20 text-primary", persona.id === activePersonaId && "ring-2 ring-primary")} onClick={() => onSelectPersona(persona.id)} onContextMenu={(event) => { event.preventDefault(); setDeletePersonaId(persona.id); }} aria-label={persona.name} /> }>
+                  <TooltipTrigger render={<Button variant="ghost" size="icon" className={cn("size-11 rounded-full bg-primary/20 text-primary", !useProfileAccents && active && "ring-2 ring-primary")} style={useProfileAccents ? { color: "#211D25", backgroundColor: accent } : undefined} onClick={() => onSelectPersona(persona.id)} onContextMenu={(event) => { event.preventDefault(); setDeletePersonaId(persona.id); }} aria-label={persona.name} aria-current={active ? "true" : undefined} /> }>
                     <span className="text-base font-semibold">{(persona.name ?? "?").charAt(0).toUpperCase()}</span>
                   </TooltipTrigger>
                   <TooltipContent>{persona.name}</TooltipContent>
                 </Tooltip>
                 <Tooltip>
-                  <TooltipTrigger render={<Button variant="ghost" size="icon" onClick={() => { onSelectPersona(persona.id); onEditProfiles(); }} aria-label={`Настройки профиля ${persona.name}`} />}>
+                  <TooltipTrigger render={<Button variant="ghost" size="icon" className={useProfileAccents ? "size-11 rounded-full" : undefined} onClick={() => { onSelectPersona(persona.id); onEditProfiles(); }} aria-label={`Настройки профиля ${persona.name}`} />}>
                     <Settings className="size-5" />
                   </TooltipTrigger>
                   <TooltipContent>Настройки профиля</TooltipContent>
@@ -103,7 +111,7 @@ export function SidebarDrawer({
                   <Button
                     variant="ghost"
                     size="icon"
-                    className="size-11"
+                    className={cn("size-11", useProfileAccents && "rounded-full")}
                     aria-label="Открыть список чатов"
                     title="Чаты"
                     aria-expanded={chatMenuPersonaId === persona.id}
@@ -141,20 +149,20 @@ export function SidebarDrawer({
                   )}
                 </div>
                 <Tooltip>
-                  <TooltipTrigger render={<Button variant="ghost" size="icon" onClick={() => onNewChat(persona.id)} aria-label={`Новый чат для ${persona.name}`} />}>
+                  <TooltipTrigger render={<Button variant="ghost" size="icon" className={useProfileAccents ? "size-11 rounded-full" : undefined} onClick={() => onNewChat(persona.id)} aria-label={`Новый чат для ${persona.name}`} />}>
                     <Plus className="size-5" />
                   </TooltipTrigger>
                   <TooltipContent>Новый чат</TooltipContent>
                 </Tooltip>
-              </div>
-            ))}
+              </div>;
+            })}
             <Tooltip>
               <TooltipTrigger
                 render={
                   <Button
                     variant="ghost"
                     size="icon"
-                    className="size-11 self-start rounded-full border border-dashed border-primary/60 text-primary"
+                    className={cn("size-11 self-start rounded-full border border-dashed border-primary/60 text-primary", useProfileAccents && "ml-1")}
                     onClick={onCreatePersona}
                     aria-label="Создать профиль"
                   />

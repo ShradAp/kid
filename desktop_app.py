@@ -68,6 +68,10 @@ import webview
 from PIL import Image, ImageDraw
 
 import api_client
+import codex_engine
+from tool_execution import execute_tool, ToolExecutionError
+from code_workspace import CodeWorkspace
+from codex_service import CodexService
 import attach_tools
 import file_tools
 import search_tools
@@ -102,6 +106,9 @@ except Exception as _memory_import_error:  # noqa: BLE001
     )
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CODEX_LIMITS = codex_engine.LimitsCache(USER_DATA_DIR)
+CODE_WORKSPACES = CodeWorkspace()
+CODEX_SERVICE = CodexService(USER_DATA_DIR, CODEX_LIMITS, CODE_WORKSPACES.root)
 
 # Кольцевой буфер последних событий бэкенда — читается фронтендом через /api/logs
 LOG_BUFFER: "collections.deque[str]" = collections.deque(maxlen=500)
@@ -118,6 +125,7 @@ LIVE_THINKING: "dict[str, list]" = {}
 # reasoning, чтобы виджет Thinking process показывал связный текст рассуждений
 # в реальном времени, пока формируется финальный ответ.
 LIVE_REASONING: "dict[str, str]" = {}
+LIVE_REPLY: "dict[str, str]" = {}
 
 # События отмены генерации по сессиям: POST /api/stop выставляет событие,
 # а циклы /api/chat (обычный и ассистент) проверяют его между шагами; долгие
@@ -1202,6 +1210,7 @@ def _prepare_messages_for_api(
     return selected
 HISTORY_FILE = str(USER_DATA_DIR / "sessions_history.json")
 NOTES_FILE = str(USER_DATA_DIR / "notes.json")
+_NOTES_LOCK = threading.RLock()
 CONFIG_PATH = str(USER_DATA_DIR / "config.json")
 FRONTEND_DIR = os.path.join(BASE_DIR, "UI")
 HOST = "127.0.0.1"
@@ -1250,16 +1259,108 @@ def load_notes():
 
 
 def save_notes(notes):
+    temporary_file = NOTES_FILE + f".{os.getpid()}.{threading.get_ident()}.tmp"
+    with _NOTES_LOCK:
+        try:
+            with open(temporary_file, "w", encoding="utf-8") as f:
+                json.dump(notes, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temporary_file, NOTES_FILE)
+        except Exception as e:
+            log_event(f"[!] Ошибка записи notes.json: {e}")
+            raise OSError("Не удалось сохранить заметки") from None
+        finally:
+            try:
+                os.unlink(temporary_file)
+            except OSError:
+                pass
+
+
+def prepend_note(note):
+    with _NOTES_LOCK:
+        notes = load_notes()
+        notes.insert(0, note)
+        save_notes(notes)
+
+
+def _codex_local_tool(name, arguments, profile_id, cancel):
+    # These handlers use only stdlib/local persistence. Anything involving an
+    # HTTP/ML/document dependency runs in the separate network-less tool worker.
+    def save_note(title, content):
+        text = str(content or "").strip()[:4000]
+        if not text:
+            raise ValueError("Пустая заметка")
+        note = {"id": "note_" + uuid.uuid4().hex, "title": str(title or "Заметка от ассистента")[:120],
+                "content": text, "createdAt": datetime.now().strftime("%d.%m.%Y, %H:%M:%S"), "author": "assistant"}
+        prepend_note(note)
+        return {"saved": True, "note": note}
+    def set_prompt(prompt):
+        cfg = load_config()
+        if profile_id not in cfg.get("profiles", {}):
+            raise ValueError("Профиль не найден")
+        cfg["profiles"][profile_id]["system_prompt"] = str(prompt)[:50000]
+        save_config(cfg)
+        return "Системный промпт этого профиля сохранён"
+    def host_permission(method, command, description, automatic=False):
+        if cancel.is_set():
+            raise ValueError("Действие отменено")
+        if not automatic:
+            decision = CODEX_SERVICE.approvals.wait(profile_id, action_session_id, method,
+                {"command":command,"reason":description},cancel,lambda text: str(text))
+            if decision.get("decision") != "accept":
+                raise ValueError("Действие Windows отменено")
+        if cancel.is_set():
+            raise ValueError("Действие отменено")
+    # Thread/turn is located on the host; the model cannot choose another session.
+    saved=CODEX_SERVICE.sessions.get(profile_id)
+    active=None
+    if saved:
+        with saved[1].lock:
+            active=next((item for item in saved[1].active.values() if item.get("cancel") is cancel),None)
+    action_session_id=active["session_id"] if active else ""
+    def windows_command(command, shell="powershell", cwd=None):
+        from code_workspace import windows_diagnostic
+        native = bool(saved and getattr(saved[1].runtime, "native", False))
+        if not native and command not in ("ipconfig","ipconfig /all"):
+            raise ValueError("Произвольные команды Windows заблокированы до настройки сетевой изоляции ОС")
+        profile=(load_config().get("profiles") or {}).get(profile_id,{})
+        host_permission("item/commandExecution/requestApproval",command,"Выполнение команды на вашем компьютере Windows",
+                        automatic=codex_engine.settings(profile).get("auto_approve_commands") is True)
+        if native:
+            from native_codex.commands import run
+            from code_workspace import windows_desktop
+            folder = cwd or saved[1].runtime.workspace or windows_desktop()
+            return run(command, shell, folder, cancel)
+        return windows_diagnostic(command)
+    def windows_write_file(file_name,content,location):
+        from code_workspace import create_windows_file, windows_desktop
+        if location == "desktop":
+            root=windows_desktop()
+        elif location == "project":
+            root=CODE_WORKSPACES.root(profile_id)
+        else:
+            raise ValueError("Выберите desktop или project")
+        host_permission("item/fileChange/requestApproval",str(Path(root)/file_name),"Создание нового файла на вашем компьютере Windows")
+        return create_windows_file(root,file_name,content)
+    if name in ("windows_command","windows_write_file") and active is None:
+        raise ValueError("Нет активного хода для действия Windows")
     try:
-        temporary_file = NOTES_FILE + ".tmp"
-        with open(temporary_file, "w", encoding="utf-8") as f:
-            json.dump(notes, f, ensure_ascii=False, indent=2)
-        os.replace(temporary_file, NOTES_FILE)
-    except Exception as e:
-        log_event(f"[!] Ошибка записи notes.json: {e}")
+        return execute_tool(name, arguments, {"save_note": save_note, "list_notes": load_notes, "set_system_prompt": set_prompt,
+                                             "windows_command":windows_command,"windows_write_file":windows_write_file}, cancel)
+    except ValueError as error:
+        if name in ("windows_command","windows_write_file"):
+            raise ToolExecutionError(str(error)) from None
+        raise
+
+
+CODEX_SERVICE.local_tools = _codex_local_tool
+from native_codex.setup import ensure as _prepare_native_codex
+CODEX_SERVICE.bootstrap = _prepare_native_codex
 
 
 sessions_memory = load_history()
+CODEX_SERVICE.history_reader = lambda session_id: list(sessions_memory.get(session_id, []))
 sessions_meta_memory = {}
 
 SESSIONS_META_FILE = str(USER_DATA_DIR / "sessions_meta.json")
@@ -1332,6 +1433,10 @@ def _is_studio_profile(data: object) -> bool:
 def _make_studio_profile(base: dict | None = None) -> dict:
     """Стартовый профиль студии: копия базового профиля + пометка студии."""
     profile = dict(base or {})
+    # Studio is an independent API-only profile; never copy Codex proxy secrets
+    # or silently interpret a Codex profile as an API connection.
+    profile["engine"] = "api"
+    profile.pop("codex", None)
     profile[STUDIO_PROFILE_FLAG] = True
     profile["display_name"] = str(profile.get("display_name") or "").strip() or "Документ-студия"
     profile.setdefault("emoji", "📄")
@@ -1825,6 +1930,68 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if not self._authorized():
             return
+        if self.path == "/api/notes":
+            self._set_cors()
+            self.wfile.write(json.dumps({"notes": load_notes()}, ensure_ascii=False).encode("utf-8"))
+            return
+        code_path = urllib.parse.urlsplit(self.path).path
+        if code_path in ("/api/code/files", "/api/code/preview", "/api/code/diff", "/api/code/events"):
+            params = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            profile_id = params.get("profile_id", [""])[0]
+            try:
+                if profile_id not in (load_config().get("profiles") or {}):
+                    raise ValueError("Профиль не найден")
+                if code_path == "/api/code/events":
+                    sid = params.get("session_id", [""])[0]
+                    saved = CODEX_SERVICE.sessions.get(profile_id)
+                    payload = {"events": list(saved[1].events.get(sid, [])) if saved else []}
+                elif code_path == "/api/code/files":
+                    payload = CODE_WORKSPACES.files(profile_id)
+                else:
+                    relative = params.get("path", [""])[0]
+                    if code_path.endswith("preview"):
+                        payload = CODE_WORKSPACES.preview(profile_id, relative)
+                    else:
+                        profile = (load_config().get("profiles") or {})[profile_id]
+                        payload = CODE_WORKSPACES.diff(profile_id, relative,
+                            lambda path: CODEX_SERVICE.project_diff(profile_id, profile, path))
+                self._set_cors()
+            except (OSError, ValueError, RuntimeError) as error:
+                message = str(error) if isinstance(error, (codex_engine.CodexBlocked, codex_engine.ProtocolError)) else "Просмотр недоступен. Выберите локальную рабочую папку и доступный файл."
+                payload = {"error": message}
+                self._set_cors(400)
+            self.wfile.write(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+            return
+        if urllib.parse.urlsplit(self.path).path == "/api/codex/limits":
+            params = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            profile_id = params.get("profile_id", [""])[0]
+            profile = (load_config().get("profiles") or {}).get(profile_id)
+            if not isinstance(profile, dict) or codex_engine.engine(profile) != "codex":
+                self._set_cors(404)
+                self.wfile.write(b'{"error":"Codex profile not found"}')
+                return
+            # Только локальный кэш: частое чтение не запускает Docker,
+            # авторизацию, переподключение или внешние запросы.
+            saved = CODEX_SERVICE.sessions.get(profile_id)
+            session = saved[1] if saved else None
+            live = bool(session and session.connection is not None and not session.connection.closed
+                        and not session.closed.is_set() and not session.runtime.stopped.is_set()
+                        and not session.limits_error and profile_id not in CODEX_SERVICE.errors)
+            payload = {"limits": CODEX_SERVICE.limits.read(profile_id, live=live)}
+            self._set_cors()
+            self.wfile.write(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+            return
+        if urllib.parse.urlsplit(self.path).path == "/api/codex/status":
+            params = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            profile_id = params.get("profile_id", [""])[0]
+            profile = (load_config().get("profiles") or {}).get(profile_id)
+            if not isinstance(profile, dict):
+                self._set_cors(404)
+                self.wfile.write(b'{"error":"Profile not found"}')
+                return
+            self._set_cors()
+            self.wfile.write(json.dumps(CODEX_SERVICE.status(profile_id, profile), ensure_ascii=False).encode("utf-8"))
+            return
         if self.path.startswith("/api/download-local"):
             query = urllib.parse.urlparse(self.path).query
             params = urllib.parse.parse_qs(query)
@@ -1958,11 +2125,14 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                 personas.append(
                     {
                         "id": p_id,
+                        "engine": p_data.get("engine", "api"),
+                        "codex": codex_engine.public_settings(p_data),
                         # Отображаемое имя/эмодзи/описание профиля хранятся в config.json
                         # (display_name/emoji/description) и переживают перезапуск;
                         # без сохранённого имени показываем, как раньше, id в верхнем регистре.
                         "name": (str(p_data.get("display_name") or "").strip() or p_id.upper()),
                         "emoji": str(p_data.get("emoji") or "🤖"),
+                        "color": p_data.get("color", "auto"),
                         "description": str(p_data.get("description") or ""),
                         "tagline": p_data.get("model", ""),
                         "modelName": p_data.get("model", ""),
@@ -1990,7 +2160,7 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                 )
 
             active_data = profiles.get(active_profile_key, {})
-            current_balance = get_live_balance(
+            current_balance = None if codex_engine.engine(active_data) == "codex" else get_live_balance(
                 active_data.get("api_key", ""), active_data.get("base_url", "")
             )
 
@@ -2066,6 +2236,13 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                         entry["attachments"] = msg["attachments"]
                     if role == "assistant" and isinstance(msg.get("reasoning"), str) and msg["reasoning"].strip():
                         entry["reasoning"] = msg["reasoning"]
+                    if role == "assistant":
+                        if isinstance(msg.get("thinking"), list):
+                            entry["thinking"] = [str(step) for step in msg["thinking"]]
+                        if isinstance(msg.get("activity"), dict):
+                            entry["activity"] = msg["activity"]
+                        elif msg.get("codex_operation"):
+                            entry["activity"] = {}
                     clean.append(entry)
                 # свежие сессии первыми, default — всегда в списке
                 session_messages[sid] = clean[-200:]
@@ -2094,6 +2271,11 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
             profiles = cfg.get("profiles", {})
             active_profile_key = cfg.get("active_profile", "main")
             active_data = profiles.get(active_profile_key, {})
+            if codex_engine.engine(active_data) == "codex":
+                result = CODEX_SERVICE.status(active_profile_key, active_data)
+                self._set_cors(200 if result["available"] else 503)
+                self.wfile.write(json.dumps(result, ensure_ascii=False).encode("utf-8"))
+                return
 
             api_base = active_data.get("base_url") or active_data.get(
                 "api_base", "https://sprutdock.ru/v1"
@@ -2154,7 +2336,7 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
 
             self._set_cors()
             self.wfile.write(
-                json.dumps({"pending": win_tools.list_pending()}, ensure_ascii=False).encode("utf-8")
+                json.dumps({"pending": win_tools.list_pending() + CODEX_SERVICE.approvals.pending()}, ensure_ascii=False).encode("utf-8")
             )
             return
         elif self.path == "/api/proxy-settings":
@@ -2214,6 +2396,11 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
             profiles = cfg.get("profiles") or {}
             active_key = cfg.get("active_profile", "main")
             active_data = profiles.get(active_key, {}) or {}
+            if codex_engine.engine(active_data) == "codex":
+                result = CODEX_SERVICE.action(active_key, active_data, "refresh")
+                self._set_cors(200 if result["available"] else 503)
+                self.wfile.write(json.dumps(result, ensure_ascii=False).encode("utf-8"))
+                return
             balance = get_live_balance(
                 active_data.get("api_key", ""),
                 active_data.get("base_url", ""),
@@ -2242,6 +2429,7 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                         "active": progress_steps is not None,
                         "steps": list(progress_steps) if progress_steps else [],
                         "reasoning": progress_reasoning or "",
+                        "reply": LIVE_REPLY.get(progress_sid, ""),
                     },
                     ensure_ascii=False,
                 ).encode("utf-8")
@@ -2282,7 +2470,9 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
             # Живой прогресс не должен «залипать» в active=true после сброса клиента.
             LIVE_THINKING.pop(getattr(self, "_chat_session_id", None), None)
             LIVE_REASONING.pop(getattr(self, "_chat_session_id", None), None)
-            CANCEL_EVENTS.pop(getattr(self, "_chat_session_id", None), None)
+            stopped = CANCEL_EVENTS.pop(getattr(self, "_chat_session_id", None), None)
+            if stopped is not None:
+                stopped.set()
         except Exception as exc:
             # Чистим живой прогресс: иначе /api/progress навсегда оставался
             # бы активным для этой сессии после аварийного завершения запроса.
@@ -2303,6 +2493,92 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                 pass
 
     def _do_POST(self):
+        if self.path == "/api/settings/reveal-secret":
+            req = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))).decode("utf-8"))
+            cfg = load_config()
+            field = req.get("field")
+            if field in ("profile_api_key", "codex_proxy_password"):
+                profile = (cfg.get("profiles") or {}).get(str(req.get("profile_id") or ""))
+                if not isinstance(profile, dict) or _is_studio_profile(profile):
+                    self._set_cors(404)
+                    self.wfile.write(b'{"error":"Profile not found"}')
+                    return
+                secret = (profile.get("api_key") or os.environ.get(str(profile.get("api_key_env") or ""), "")) if field == "profile_api_key" else (profile.get("codex") or {}).get("proxy_password", "")
+            elif field == "search_api_key":
+                secret = cfg.get("search_api_key", "")
+            elif field == "proxy_password":
+                secret = cfg.get("proxy_pass") or urllib.parse.unquote(urllib.parse.urlparse(cfg.get("proxy_url", "")).password or "")
+            else:
+                self._set_cors(400)
+                self.wfile.write(b'{"error":"Unknown secret field"}')
+                return
+            # Только явный запрос глазика; обычная загрузка настроек не раскрывает секреты.
+            self._set_cors()
+            self.wfile.write(json.dumps({"secret": secret}, ensure_ascii=False).encode("utf-8"))
+            return
+        if self.path == "/api/codex/recover":
+            req = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))).decode("utf-8"))
+            pid, sid = str(req.get("profile_id") or ""), str(req.get("session_id") or "")
+            profile = (load_config().get("profiles") or {}).get(pid)
+            try:
+                if not isinstance(profile, dict) or not sid or sid in DELETED_SESSIONS:
+                    raise codex_engine.ProtocolError("Диалог не найден")
+                meta = load_sessions_meta().get(sid) or {}
+                if meta.get("personaId") and meta["personaId"] != pid:
+                    raise codex_engine.ProtocolError("Диалог относится к другому профилю")
+                result = CODEX_SERVICE.get(pid, profile).recover(sid)
+                history = load_chat_history(sid)
+                operation = result.get("operation_id")
+                if not result.get("cancelled") and not any(item.get("codex_operation") == operation and item.get("role") == "assistant" for item in history):
+                    history.extend([{"role": "user", "content": result.get("prompt", ""), "codex_operation": operation},
+                                    {"role": "assistant", "content": result.get("reply", ""), "codex_operation": operation,
+                                     "thinking":result.get("thinking", []), "activity":result.get("activity", {})}])
+                    save_chat_history(sid, history)
+                    sessions_memory[sid] = history
+                self._set_cors()
+            except Exception as error:
+                result = {"error": str(error) if isinstance(error, (codex_engine.CodexBlocked, codex_engine.ProtocolError)) else codex_engine.PROXY_BLOCKED}
+                self._set_cors(503)
+            self.wfile.write(json.dumps(result, ensure_ascii=False).encode("utf-8"))
+            return
+        if self.path in ("/api/code/select", "/api/code/open-vscode"):
+            req = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))).decode("utf-8"))
+            profile_id = str(req.get("profile_id") or "")
+            cfg = load_config()
+            profile = (cfg.get("profiles") or {}).get(profile_id)
+            if not isinstance(profile, dict):
+                self._set_cors(404)
+                self.wfile.write(b'{"error":"Profile not found"}')
+                return
+            try:
+                if self.path.endswith("select"):
+                    chosen = _pick_directory_native(get_desktop_dir())
+                    if chosen:
+                        workspace = CODE_WORKSPACES.grant(profile_id, chosen)
+                        profile["codex"] = {**codex_engine.settings(profile), "workspace": workspace}
+                        save_config(cfg)
+                    payload = {"path": chosen or ""}
+                else:
+                    CODE_WORKSPACES.open_vscode(profile_id)
+                    payload = {"ok": True}
+                self._set_cors()
+            except (OSError, ValueError):
+                payload = {"error": "Не удалось открыть локальную рабочую папку или VS Code"}
+                self._set_cors(400)
+            self.wfile.write(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+            return
+        if self.path in ("/api/codex/login", "/api/codex/logout", "/api/codex/refresh", "/api/codex/retry"):
+            req = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))).decode("utf-8"))
+            profile_id = str(req.get("profile_id") or "")
+            profile = (load_config().get("profiles") or {}).get(profile_id)
+            if not isinstance(profile, dict):
+                self._set_cors(404)
+                self.wfile.write(b'{"error":"Profile not found"}')
+                return
+            result = CODEX_SERVICE.action(profile_id, profile, self.path.rsplit("/", 1)[1])
+            self._set_cors(200 if result["available"] else 503)
+            self.wfile.write(json.dumps(result, ensure_ascii=False).encode("utf-8"))
+            return
         if self.path.startswith("/api/generated/") and self.path.endswith("/open"):
             file_id = self.path.split("/api/generated/", 1)[1].split("/", 1)[0]
             gen_path, _gen_name = _generated_file(file_id)
@@ -2360,7 +2636,9 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
             except json.JSONDecodeError:
                 req_data = {}
             action_id = str((req_data or {}).get("id") or "").strip()
-            if self.path.endswith("/approve"):
+            if action_id.startswith("codex_"):
+                ok = CODEX_SERVICE.approvals.decide(action_id, self.path.endswith("/approve"))
+            elif self.path.endswith("/approve"):
                 ok = win_tools.approve(action_id) if action_id else False
             else:
                 ok = win_tools.reject(action_id) if action_id else False
@@ -2882,6 +3160,60 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
 
             session_id = req_data.get("session_id", "default")
             session_id = str(session_id or "default")
+            # Route before attachment extraction, memory, research, balance or
+            # ANY API work. Retained API settings never act as Codex fallback.
+            routing_cfg = load_config()
+            routing_id = str(req_data.get("persona_id") or routing_cfg.get("active_profile", "main"))
+            if req_data.get("studio"):
+                routing_id = str(req_data.get("studio_persona_id") or routing_cfg.get(STUDIO_ACTIVE_KEY) or routing_id)
+            routing_profile = (routing_cfg.get("profiles") or {}).get(routing_id)
+            if not isinstance(routing_profile, dict):
+                self._set_cors(404)
+                self.wfile.write(b'{"error":"Profile not found"}')
+                return
+            if codex_engine.engine(routing_profile) == "codex":
+                cancel = threading.Event()
+                CANCEL_EVENTS[session_id] = cancel
+                self._chat_session_id = session_id
+                steps = []
+                LIVE_THINKING[session_id] = steps
+                LIVE_REASONING[session_id] = ""
+                try:
+                    if session_id in DELETED_SESSIONS:
+                        raise codex_engine.ProtocolError("Диалог удалён")
+                    if req_data.get("attachments"):
+                        raise codex_engine.ProtocolError("Вложения Codex пока недоступны; используйте выбранную папку проекта")
+                    meta = load_sessions_meta().get(session_id) or {}
+                    if meta.get("personaId") and meta["personaId"] != routing_id:
+                        raise codex_engine.ProtocolError("Диалог относится к другому профилю")
+                    session = CODEX_SERVICE.get(routing_id, routing_profile)
+                    prompt = str(req_data.get("prompt") or "")
+                    operation = str(req_data.get("operation_id") or uuid.uuid4())
+                    result = session.run(session_id, prompt, operation, cancel, steps.append,
+                                         timeout=max(30, int(routing_profile.get("request_timeout", 300))),
+                                         on_text=lambda text: LIVE_REPLY.__setitem__(session_id, text))
+                    if session_id not in DELETED_SESSIONS and not result.get("cancelled"):
+                        history = load_chat_history(session_id)
+                        if not any(item.get("codex_operation") == operation and item.get("role") == "assistant" for item in history):
+                            history.extend([{"role": "user", "content": prompt, "codex_operation": operation}, {"role": "assistant", "content": result["reply"],
+                                           "codex_operation": operation, "reasoning": result.get("reasoning", ""), "thinking": result.get("thinking", []), "activity": result.get("activity", {})}])
+                        save_chat_history(session_id, history)
+                        sessions_memory[session_id] = history
+                    self._set_cors()
+                    self.wfile.write(json.dumps(result, ensure_ascii=False).encode("utf-8"))
+                except Exception as error:
+                    if isinstance(error, (codex_engine.CodexBlocked, codex_engine.ProtocolError)):
+                        message = str(error)
+                    else:
+                        message = codex_engine.PROXY_BLOCKED
+                    self._set_cors(503)
+                    self.wfile.write(json.dumps({"error": message}, ensure_ascii=False).encode("utf-8"))
+                finally:
+                    CANCEL_EVENTS.pop(session_id, None)
+                    LIVE_THINKING.pop(session_id, None)
+                    LIVE_REASONING.pop(session_id, None)
+                    LIVE_REPLY.pop(session_id, None)
+                return
             # Document Studio идёт по собственным профилям и собственному хранилищу
             # чатов — режим определяется здесь, до чтения меты и истории.
             studio_mode = bool(req_data.get("studio"))
@@ -3556,7 +3888,7 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                         elif fn_name == "create_downloadable_file":
                             thinking_steps.append(f"📄 Создание файла: {fn_args.get('file_name', '')}")
                             try:
-                                tool_output = file_tools.create_downloadable_file(**fn_args)
+                                tool_output = execute_tool(fn_name, fn_args, {fn_name: file_tools.create_downloadable_file}, cancel_event)
                             except Exception as err:
                                 tool_output = f"Ошибка создания файла: {err}"
 
@@ -3578,9 +3910,7 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                                     "createdAt": datetime.now().strftime("%d.%m.%Y, %H:%M:%S"),
                                     "author": "assistant",
                                 }
-                                stored_notes = load_notes()
-                                stored_notes.insert(0, note_data)
-                                save_notes(stored_notes)
+                                prepend_note(note_data)
                                 assistant_notes.append({"title": _nt, "content": _nc})
                                 thinking_steps.append(f"📝 Заметка сохранена: «{_nt}»")
                                 log_event(f"[*] Модель сохранила заметку: {_nt}")
@@ -4069,6 +4399,7 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                 # 1) метка удаления: блокирует поздние записи и «воскрешение»
                 #    чата при сохранении других сессий или позднем /api/chat.
                 DELETED_SESSIONS.add(sid)
+                CODEX_SERVICE.forget(sid)
                 # удалённый чат не должен остаться «последним открытым» —
                 # иначе после рестарта приложение откроет несуществующий чат
                 try:
@@ -4113,6 +4444,7 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
             try:
                 req_data = json.loads(body)
                 sid = str(req_data.get("session_id") or req_data.get("id") or "default").strip()
+                CODEX_SERVICE.forget(sid)
                 if sid in DELETED_SESSIONS or sid not in sessions_memory:
                     # Удалённую/отсутствующую сессию не «воскрешаем» пустым файлом.
                     self._set_cors()
@@ -4142,7 +4474,7 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                 cfg = load_config()
                 profiles = cfg.get("profiles") or {}
                 profile_name = persona["id"]
-                existing = profiles.get(profile_name, {})
+                existing = codex_engine.update_profile(profiles.get(profile_name, {}), persona)
                 # Профиль студии редактируется только из студии — основные профили
                 # не должны его перезаписывать.
                 if _is_studio_profile(existing):
@@ -4156,6 +4488,7 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                     "display_name": str(persona.get("name", existing.get("display_name", "")) or "").strip()
                     or profile_name.upper(),
                     "emoji": str(persona.get("emoji", existing.get("emoji", "🤖")) or "🤖"),
+                    "color": persona.get("color", existing.get("color", "auto")) if persona.get("color", existing.get("color", "auto")) in ("auto", "rose", "peach", "sand", "sage", "teal", "blue", "lavender") else "auto",
                     "description": str(persona.get("description", existing.get("description", ""))),
                     "base_url": persona.get("baseUrl", existing.get("base_url", "")),
                     "model": persona.get("modelName", existing.get("model", "")),
@@ -4174,6 +4507,7 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                     "chat_msg_text_part_max_chars": max(0, int(persona.get("chatMsgTextPartMaxChars", existing.get("chat_msg_text_part_max_chars", 0)) or 0)),
                 })
                 profiles[profile_name] = existing
+                CODEX_SERVICE.errors.pop(profile_name, None)
                 if persona.get("clearApiKey") is True:
                     existing["api_key_env"] = ""
                 cfg["profiles"] = profiles
@@ -4234,8 +4568,11 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                 profiles = cfg.get("profiles") or {}
                 # Основной чат не может сделать активным профиль студии.
                 if profile_id in profiles and not _is_studio_profile(profiles.get(profile_id)):
+                    changed = cfg.get("active_profile") != profile_id
                     cfg["active_profile"] = profile_id
                     save_config(cfg)
+                    if codex_engine.engine(profiles[profile_id]) == "codex" and (changed or profile_id not in CODEX_SERVICE.sessions):
+                        threading.Thread(target=_connect_startup_codex, daemon=True, name="kid-codex-profile-connect").start()
                 self._set_cors()
                 self.wfile.write(json.dumps({"ok": True}).encode("utf-8"))
             except Exception as e:
@@ -4333,10 +4670,21 @@ def _write_startup_error(message: str) -> None:
         pass
 
 
+class _BridgeHTTPServer(http.server.ThreadingHTTPServer):
+    # HTTPServer включает SO_REUSEADDR; на Windows это допускает два моста
+    # на одном порту. Эксклюзивная привязка исключает такое смешение запросов.
+    allow_reuse_address = os.name != "nt"
+
+    def server_bind(self):
+        if os.name == "nt":
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
 def start_backend():
     global _backend_server
     try:
-        server = http.server.ThreadingHTTPServer(("127.0.0.1", BRIDGE_PORT), BridgeHandler)
+        server = _BridgeHTTPServer(("127.0.0.1", BRIDGE_PORT), BridgeHandler)
     except OSError as e:
         BRIDGE_STARTED.set()
         _write_startup_error(
@@ -4387,7 +4735,7 @@ def start_frontend():
             with open(USER_DATA_DIR / "frontend.log", "a", encoding="utf-8", errors="replace") as frontend_log:
                 frontend_proc = subprocess.Popen(
                     [node_exe, next_bin, script, "-p", str(PORT), "--hostname", "127.0.0.1"],
-                    env={**os.environ, "KID_BRIDGE_TOKEN": BRIDGE_TOKEN},
+                    env={**os.environ, "KID_BRIDGE_TOKEN": BRIDGE_TOKEN, "KID_BRIDGE_PORT":str(BRIDGE_PORT)},
                     cwd=FRONTEND_DIR,
                     creationflags=creationflags,
                     stdout=frontend_log,
@@ -4410,6 +4758,7 @@ def shutdown_resources() -> bool:
         log_event("[*] Завершение приложения: остановка запросов и дочерних процессов")
         for cancel_event in list(CANCEL_EVENTS.values()):
             cancel_event.set()
+        CODEX_SERVICE.close()
         try:
             keyboard.unhook_all_hotkeys()
         except Exception:
@@ -4458,7 +4807,10 @@ def shutdown_resources() -> bool:
 
 
 def main(window_title: str = "Assistant", console: bool = True) -> None:
-    from process_cleanup import retain_child_process_job
+    from process_cleanup import desktop_instance, retain_child_process_job
+
+    if not desktop_instance(_activate_existing_window):
+        return
 
     # Job охватывает Next.js, Playwright и WebView2, даже при аварийном выходе.
     retain_child_process_job()
@@ -4466,6 +4818,35 @@ def main(window_title: str = "Assistant", console: bool = True) -> None:
         _run_application(window_title=window_title, console=console)
     finally:
         shutdown_resources()
+
+
+_window_ready = threading.Event()
+_application_window = None
+
+
+def _activate_existing_window():
+    # Событие может прийти во время загрузки Next.js или создания WebView.
+    _window_ready.wait()
+    if not SHUTTING_DOWN.is_set():
+        _application_window.show()
+        _application_window.restore()
+
+
+def _connect_startup_codex():
+    """Одно фоновое подключение выбранного профиля через штатный isolation gate."""
+    try:
+        selected = load_config()
+        profile_id = selected.get("active_profile", "main")
+        profile = (selected.get("profiles") or {}).get(profile_id, {})
+        if SHUTTING_DOWN.is_set() or codex_engine.engine(profile) != "codex":
+            return
+        log_event("[CODEX] Автоматическое подключение через прокси…")
+        result = CODEX_SERVICE.action(profile_id, profile, "refresh")
+        log_event("[CODEX] Защищённый канал подключён" if result.get("proxy_state") == "verified"
+                  else "[CODEX] Прокси недоступен. Запрос Codex заблокирован")
+    except Exception:
+        # Конфигурация и исключения могут содержать секреты; не печатаем их.
+        log_event("[CODEX] Автоматическое подключение недоступно. Прямой маршрут запрещён")
 
 
 def _run_application(window_title: str = "Assistant", console: bool = True) -> None:
@@ -4492,6 +4873,11 @@ def _run_application(window_title: str = "Assistant", console: bool = True) -> N
     # LanceDB поднимаются до первого сообщения, чтобы retrieval не задерживал
     # первый ответ. Поток daemon — старт окна не блокирует.
     def _warm_profile_memory():
+        selected = load_config()
+        if codex_engine.engine((selected.get("profiles") or {}).get(selected.get("active_profile", "main"), {})) == "codex":
+            # FastEmbed's first warmup can download a model. Codex memory is
+            # initialized only by the isolated tool executor, never on the host.
+            return
         if user_profile_memory is None:
             log_event(
                 "[!] Модуль памяти профиля не импортирован — память выключена"
@@ -4526,6 +4912,7 @@ def _run_application(window_title: str = "Assistant", console: bool = True) -> N
         raise SystemExit(1)
     t_front = threading.Thread(target=start_frontend, daemon=True)
     t_front.start()
+    threading.Thread(target=_connect_startup_codex, daemon=True, name="kid-codex-startup").start()
 
     log_event("[*] Ожидание компиляции интерфейса Next.js...")
     ready = wait_for_server(HOST, PORT, timeout=45)
@@ -4555,6 +4942,7 @@ def _run_application(window_title: str = "Assistant", console: bool = True) -> N
 
     log_event(f"[+] Запуск завершён за {time.time() - startup_started:.1f} с. Открываем окно...")
 
+    global _application_window
     window = webview.create_window(
         title=window_title,
         url=f"http://{HOST}:{PORT}",
@@ -4564,9 +4952,17 @@ def _run_application(window_title: str = "Assistant", console: bool = True) -> N
         text_select=True,  # РАЗРЕШАЕТ ВЫДЕЛЕНИЕ И КОПИРОВАНИЕ ТЕКСТА
         background_color="#0a0a0c",
     )
+    _application_window = window
 
     is_visible = True
     tray_icon = None
+
+    def on_shown():
+        nonlocal is_visible
+        is_visible = True
+        _window_ready.set()
+
+    window.events.shown += on_shown
 
     def terminate_all(*_args):
         nonlocal tray_icon

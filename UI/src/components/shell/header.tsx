@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Menu, Coins, RefreshCw, NotebookPen, ScrollText, FileText } from "lucide-react";
+import { Menu, Coins, RefreshCw, NotebookPen, ScrollText, FileText, FolderCode } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Tooltip,
@@ -11,9 +11,12 @@ import {
 import { cn } from "@/lib/utils";
 import { StatusPill } from "@/components/shell/status-pill";
 import type { AssistantStatus } from "@/lib/assistant-data";
+import { CodexQuota } from "@/components/widgets/codex-status";
 
 export function Header({
   onOpenDrawer,
+  codexProfileId,
+  onOpenCode,
   balance,
   tokensUsed,
   tokensTotal,
@@ -28,6 +31,8 @@ export function Header({
   onToggleLogs,
 }: {
   onOpenDrawer: () => void;
+  codexProfileId?: string;
+  onOpenCode?: () => void;
   balance: number;
   tokensUsed: number;
   tokensTotal: number;
@@ -87,6 +92,7 @@ export function Header({
       </div>
 
       <div className="flex flex-1 items-center justify-center gap-2 overflow-x-auto sm:flex-none sm:justify-start">
+        {codexProfileId ? <CodexQuota key={codexProfileId} profileId={codexProfileId} /> : <>
         <div className="flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.04] py-1.5 pl-3 pr-1.5">
           <Coins className="size-3.5 text-amber-400" />
           <span className="text-xs font-medium text-foreground/90 text-nowrap">
@@ -122,9 +128,16 @@ export function Header({
             / 1M токенов
           </span>
         </div>
+        </>}
       </div>
 
       <div className="flex items-center gap-2">
+        {codexProfileId && <Tooltip>
+          <TooltipTrigger render={<button aria-label="Файлы и изменения проекта" onClick={onOpenCode} className="rounded-full border border-white/10 bg-white/[0.04] p-2 text-foreground/80 transition hover:bg-white/10 hover:text-foreground" />}>
+            <FolderCode className="size-3.5" />
+          </TooltipTrigger>
+          <TooltipContent>Файлы и изменения проекта</TooltipContent>
+        </Tooltip>}
         <Tooltip>
           <TooltipTrigger
             render={

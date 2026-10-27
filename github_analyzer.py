@@ -138,7 +138,7 @@ def _fetch_raw(session, owner: str, repo: str, branch: str, path: str) -> str | 
     return resp.text or ""
 
 
-def _collect_via_api(owner: str, repo: str, token: str) -> dict:
+def _collect_via_api(owner: str, repo: str, token: str, session_factory=None) -> dict:
     meta: dict = {
         "owner": owner,
         "repo": repo,
@@ -155,7 +155,7 @@ def _collect_via_api(owner: str, repo: str, token: str) -> dict:
         "manifests": {},
         "errors": [],
     }
-    session = requests.Session()
+    session = (session_factory or requests.Session)()
     session.trust_env = False
 
     info = _api_get(session, f"{GITHUB_API}/repos/{owner}/{repo}", token)
@@ -215,7 +215,7 @@ def _collect_via_api(owner: str, repo: str, token: str) -> dict:
     return meta
 
 
-def _collect_via_archive(owner: str, repo: str, branch: str) -> dict:
+def _collect_via_archive(owner: str, repo: str, branch: str, session_factory=None) -> dict:
     """Фолбэк: скачиваем tarball с codeload и читаем файлы напрямую (без API)."""
     meta: dict = {
         "owner": owner,
@@ -233,7 +233,7 @@ def _collect_via_archive(owner: str, repo: str, branch: str) -> dict:
         "manifests": {},
         "errors": [],
     }
-    session = requests.Session()
+    session = (session_factory or requests.Session)()
     session.trust_env = False
 
     raw = None
@@ -289,13 +289,13 @@ def _collect_via_archive(owner: str, repo: str, branch: str) -> dict:
     return meta
 
 
-def collect_metadata(owner: str, repo: str, token: str | None = None) -> dict:
+def collect_metadata(owner: str, repo: str, token: str | None = None, *, session_factory=None) -> dict:
     """Собирает метаданные: API в первую очередь, архив — как фолбэк."""
     token = token or _token()
-    meta = _collect_via_api(owner, repo, token)
+    meta = _collect_via_api(owner, repo, token, session_factory=session_factory)
     if meta.get("top_level") or meta.get("manifests") or meta.get("readme"):
         return meta
-    return _collect_via_archive(owner, repo, meta.get("default_branch") or "main")
+    return _collect_via_archive(owner, repo, meta.get("default_branch") or "main", session_factory=session_factory)
 
 
 def build_analysis_prompt(meta: dict) -> str:

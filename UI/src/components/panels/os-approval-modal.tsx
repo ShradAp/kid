@@ -19,19 +19,23 @@ const BRIDGE = "";
 // и последствия; выполнение идёт только после явного «Подтвердить».
 export function OsApprovalModal() {
   const [actions, setActions] = useState<OsPendingAction[]>([]);
+  const [deciding, setDeciding] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
+    let failures = 0;
     const poll = async () => {
       try {
         const res = await fetch(`${BRIDGE}/api/os-tools/pending`);
-        if (!res.ok) return;
+        if (!res.ok) throw new Error("Backend unavailable");
         const data = await res.json();
         if (!cancelled && Array.isArray(data.pending)) {
+          failures = 0;
           setActions(data.pending);
         }
       } catch {
-        // мост недоступен — молча ждём следующий тик
+        failures += 1;
+        if (!cancelled && failures >= 2) setActions([]);
       }
     };
     void poll();
@@ -43,6 +47,8 @@ export function OsApprovalModal() {
   }, []);
 
   async function decide(id: string, approve: boolean) {
+    if (deciding !== null) return;
+    setDeciding(id);
     try {
       const res = await fetch(
         `${BRIDGE}/api/os-tools/${approve ? "approve" : "reject"}`,
@@ -61,6 +67,8 @@ export function OsApprovalModal() {
       toast.success(approve ? "Операция подтверждена" : "Операция отклонена");
     } catch {
       toast.error("Ошибка соединения с бэкендом");
+    } finally {
+      setDeciding(null);
     }
   }
 
@@ -79,8 +87,8 @@ export function OsApprovalModal() {
           </span>
         </div>
         <p className="mb-4 text-sm text-muted-foreground">
-          Модель запросила действие над Windows. Ничего не выполняется, пока вы не
-          подтвердите.
+          Подтвердите конкретное действие модели. Для Codex разрешение действует
+          действует только для показанного действия. Инструменты Windows работают на вашем ПК; сетевую изоляцию подтверждение не снимает.
         </p>
 
         <div className="flex max-h-[60vh] flex-col gap-3 overflow-y-auto">
@@ -106,6 +114,7 @@ export function OsApprovalModal() {
               <div className="flex gap-2">
                 <button
                   type="button"
+                  disabled={deciding !== null}
                   onClick={() => void decide(action.id, true)}
                   className="rounded-lg bg-emerald-600 px-4 py-1.5 text-sm font-semibold text-white transition hover:bg-emerald-500"
                 >
@@ -113,6 +122,7 @@ export function OsApprovalModal() {
                 </button>
                 <button
                   type="button"
+                  disabled={deciding !== null}
                   onClick={() => void decide(action.id, false)}
                   className="rounded-lg bg-destructive/80 px-4 py-1.5 text-sm font-semibold text-white transition hover:bg-destructive"
                 >

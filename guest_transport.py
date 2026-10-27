@@ -74,6 +74,7 @@ class GuestSession(requests.Session):
         super().__init__()
         self.trust_env = False  # In particular: never load .netrc accounts.
         self.proxy_url = configured_proxy() if proxy_url is None else proxy_url
+        self.strict_proxy = os.environ.get("KID_STRICT_PROXY") == "1"
         self.deadline = time.monotonic() + max(0, timeout)
         self.max_requests, self.max_bytes = max_requests, max_bytes
         self.max_response_bytes = max_response_bytes
@@ -101,7 +102,9 @@ class GuestSession(requests.Session):
         kwargs.pop("timeout", None)
         if kwargs.get("auth") or any(k.lower() in ("authorization", "cookie", "proxy-authorization") for k in kwargs.get("headers", {})):
             raise GuestTransportError("account_credentials_forbidden")
-        routes = [("proxy", self.proxy_url), ("direct", "")] if self.proxy_url else [("direct", "")]
+        if self.strict_proxy and not self.proxy_url:
+            raise GuestTransportError("proxy_required")
+        routes = [("proxy", self.proxy_url)] if self.strict_proxy else ([("proxy", self.proxy_url), ("direct", "")] if self.proxy_url else [("direct", "")])
         for route, proxy in routes:
             target = url
             for _ in range(4):

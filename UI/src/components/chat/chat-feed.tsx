@@ -4,6 +4,7 @@ import { useEffect, useRef, type RefObject } from "react";
 import { Sparkles } from "lucide-react";
 import { ChatMessage } from "@/components/chat/chat-message";
 import { ThinkingAccordion } from "@/components/chat/thinking-accordion";
+import { ActionTimeline } from "@/components/chat/action-timeline";
 import type { Message } from "@/lib/assistant-data";
 
 const FEED_SPACING_CLASSES = [
@@ -23,6 +24,8 @@ export function ChatFeed({
   isThinking,
   liveSteps,
   liveReasoning,
+  liveReply,
+  codex = false,
   fontSizeIndex,
   scrollContainerRef,
 }: {
@@ -32,6 +35,8 @@ export function ChatFeed({
   liveSteps: string[];
   /** Живой текст размышлений модели (reasoning content) в реальном времени */
   liveReasoning?: string;
+  liveReply?: string;
+  codex?: boolean;
   fontSizeIndex: number;
   /** Скролл-контейнер ленты (<main> в page.tsx): нужен для «прилипания» к низу. */
   scrollContainerRef?: RefObject<HTMLElement | null>;
@@ -39,6 +44,7 @@ export function ChatFeed({
   const bottomRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
   const prevMessagesRef = useRef<Message[]>(messages);
+  const showLive = isThinking && !(codex && messages[messages.length - 1]?.role === "assistant");
 
   // Следим, у нижнего ли края ленты находится пользователь. Как только он
   // прокрутил вверх — выключаем автопрокрутку; вернулся вниз — включаем снова.
@@ -70,7 +76,7 @@ export function ChatFeed({
     } else {
       bottomRef.current?.scrollIntoView({ behavior: "smooth" });
     }
-  }, [messages, isThinking, liveSteps.length, liveReasoning, scrollContainerRef]);
+  }, [messages, isThinking, liveSteps.length, liveReasoning, liveReply, scrollContainerRef]);
 
   if (messages.length === 0 && !isThinking) {
     return (
@@ -93,7 +99,9 @@ export function ChatFeed({
       {messages.map((message) => (
         <ChatMessage key={message.id} message={message} />
       ))}
-      {isThinking && (
+      {showLive && codex && <div className="max-w-[85%]"><ActionTimeline steps={liveSteps} reasoning={liveReasoning} live /></div>}
+      {showLive && liveReply && <ChatMessage streaming message={{ id: "live-codex", role: "assistant", content: liveReply, timestamp: "", activity: codex ? {} : undefined }} />}
+      {showLive && !codex && (
         <div className="flex max-w-[85%] flex-col gap-1">
           {liveSteps.length > 0 || (liveReasoning && liveReasoning.trim()) ? (
             <ThinkingAccordion steps={liveSteps} reasoning={liveReasoning} live />

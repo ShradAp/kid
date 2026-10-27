@@ -2,6 +2,58 @@
 import os
 
 _job_handle = None
+_instance_handles = []
+
+
+def desktop_instance(on_activate):
+    """Повторный запуск поднимает существующее окно через локальное событие ОС.
+
+    Имена привязаны к проекту; сеть, файлы с токенами и HTTP API не нужны.
+    Дескрипторы удерживаются до выхода процесса, включая аварийное завершение.
+    """
+    if os.name != "nt":
+        return True
+    import ctypes
+    import hashlib
+    import threading
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.CreateEventW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.BOOL, wintypes.LPCWSTR]
+    kernel.CreateEventW.restype = wintypes.HANDLE
+    kernel.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
+    kernel.CreateMutexW.restype = wintypes.HANDLE
+    kernel.SetEvent.argtypes = [wintypes.HANDLE]
+    kernel.SetEvent.restype = wintypes.BOOL
+    kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel.WaitForSingleObject.restype = wintypes.DWORD
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.CloseHandle.restype = wintypes.BOOL
+    identity = hashlib.sha256(os.path.normcase(os.path.abspath(__file__)).encode()).hexdigest()[:24]
+    name = "Local\\KidDesktop-" + identity
+    event = kernel.CreateEventW(None, False, False, name + "-activate")
+    if not event:
+        raise ctypes.WinError(ctypes.get_last_error())
+    mutex = kernel.CreateMutexW(None, False, name + "-instance")
+    error = ctypes.get_last_error()
+    if not mutex:
+        kernel.CloseHandle(event)
+        raise ctypes.WinError(error)
+    if error == 183:  # ERROR_ALREADY_EXISTS
+        signaled = kernel.SetEvent(event)
+        kernel.CloseHandle(mutex)
+        kernel.CloseHandle(event)
+        if not signaled:
+            raise ctypes.WinError(ctypes.get_last_error())
+        return False
+    _instance_handles.extend((mutex, event))
+
+    def listen():
+        while kernel.WaitForSingleObject(event, 0xFFFFFFFF) == 0:
+            on_activate()
+
+    threading.Thread(target=listen, daemon=True, name="kid-window-activation").start()
+    return True
 
 
 def retain_child_process_job() -> None:

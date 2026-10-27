@@ -8,6 +8,7 @@ import { ChatFeed } from "@/components/chat/chat-feed";
 import { InputDeck, type Attachment } from "@/components/chat/input-deck";
 import { SettingsModal } from "@/components/dialogs/settings-modal";
 import { ProfilesModal } from "@/components/dialogs/profiles-modal";
+import { CodePanel } from "@/components/panels/code-panel";
 import { NotesPanel, type Note, NOTES_STORAGE_KEY } from "@/components/panels/notes-panel";
 import { LogsPanel } from "@/components/panels/logs-panel";
 import { FilePreviewPanel } from "@/components/panels/file-preview-panel";
@@ -110,9 +111,13 @@ export default function AssistantPage() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [profilesOpen, setProfilesOpen] = useState(false);
+  const [codeOpen, setCodeOpen] = useState(false);
+  const [liveReplyBySession, setLiveReplyBySession] = useState<Record<string, string>>({});
   const [notesOpen, setNotesOpen] = useState(false);
   const [notes, setNotes] = useState<Note[]>([]);
   const notesLoadedRef = useRef(false);
+  const notesSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const notesLastSnapshotRef = useRef<string | null>(null);
   const [logsOpen, setLogsOpen] = useState(false);
   const [logs, setLogs] = useState<string[]>([]);
   // Document Studio открывается в этом же окне приложения из бокового меню.
@@ -189,19 +194,20 @@ export default function AssistantPage() {
   // Заметки хранятся на бэкенде, поэтому не зависят от профиля WebView и его кэша.
   useEffect(() => {
     window.localStorage.removeItem("kid-personas");
-    fetch("/api/init")
-      .then((response) => response.json())
+    fetch("/api/notes")
+      .then((response) => {
+        if (!response.ok) throw new Error("Не удалось загрузить заметки");
+        return response.json();
+      })
       .then((data) => {
         if (Array.isArray(data.notes)) {
           setNotes((currentNotes) => {
-            // Не затираем заметку, созданную ассистентом, если /api/init
+            // Не затираем заметку, созданную ассистентом, если /api/notes
             // завершился после ответа /api/chat.
-            const nextNotes = currentNotes.length > 0 ? currentNotes : data.notes;
-            try {
-              window.localStorage.setItem(NOTES_STORAGE_KEY, JSON.stringify(nextNotes));
-            } catch {
-              // локальный кэш может быть недоступен
-            }
+            const ids = new Set(currentNotes.map((note) => note.id));
+            const nextNotes = [...currentNotes, ...data.notes.filter((note: Note) => !ids.has(note.id))];
+            // Hydrating an unchanged snapshot is a read, not a user edit.
+            if (currentNotes.length === 0) notesLastSnapshotRef.current = JSON.stringify(nextNotes);
             return nextNotes;
           });
         }
@@ -211,7 +217,12 @@ export default function AssistantPage() {
         try {
           const raw = window.localStorage.getItem(NOTES_STORAGE_KEY);
           const parsed = raw ? JSON.parse(raw) : [];
-          if (Array.isArray(parsed)) setNotes(parsed);
+          if (Array.isArray(parsed)) setNotes((currentNotes) => {
+            const ids = new Set(currentNotes.map((note) => note.id));
+            const restored = [...currentNotes, ...parsed.filter((note: Note) => !ids.has(note.id))];
+            if (currentNotes.length === 0) notesLastSnapshotRef.current = JSON.stringify(restored);
+            return restored;
+          });
         } catch {
           // игнорируем повреждённое хранилище
         }
@@ -222,16 +233,31 @@ export default function AssistantPage() {
   // Локальный кэш ускоряет открытие панели, а серверная копия переживает ребут приложения.
   useEffect(() => {
     if (!notesLoadedRef.current) return;
+    const snapshot = JSON.stringify(notes);
+    let localCopySaved = false;
     try {
-      window.localStorage.setItem(NOTES_STORAGE_KEY, JSON.stringify(notes));
+      window.localStorage.setItem(NOTES_STORAGE_KEY, snapshot);
+      localCopySaved = true;
     } catch {
       // хранилище может быть недоступно (приватный режим и т.п.)
     }
-    fetch("/api/notes", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ notes }),
-    }).catch(() => undefined);
+    if (snapshot === notesLastSnapshotRef.current) return;
+    notesLastSnapshotRef.current = snapshot;
+    const body = JSON.stringify({ notes });
+    // Full snapshots must arrive in edit order: a slow older request must not
+    // overwrite a newer saved note list.
+    notesSaveQueueRef.current = notesSaveQueueRef.current.catch(() => undefined).then(async () => {
+      const response = await fetch("/api/notes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+      });
+      if (!response.ok) throw new Error("Не удалось сохранить заметки");
+    }).catch(() => {
+      toast.error(localCopySaved
+        ? "Не удалось сохранить заметки на сервере. Локальная копия сохранена."
+        : "Не удалось сохранить заметки. Копия остаётся только в открытом окне.");
+    });
   }, [notes]);
 
   // Режим клика по скрепке (скачивание/предпросмотр) — глобальная настройка с бэкенда.
@@ -307,6 +333,7 @@ export default function AssistantPage() {
   // Принудительное обновление баланса (кнопка Refresh в шапке): лёгкий эндпоинт,
   // который игнорирует TTL-кэш и сразу идёт в SprutDock за актуальным значением.
   const refreshBalance = async () => {
+    if (activePersona?.engine === "codex") return;
     try {
       const response = await fetch("/api/balance/refresh");
       const data = await response.json();
@@ -426,6 +453,8 @@ export default function AssistantPage() {
                       .map((a: any) => ({ name: a.name, url: a.url }))
                   : undefined,
                 reasoning: typeof m.reasoning === "string" ? m.reasoning : undefined,
+                activity: m.activity || (m.codex_operation ? {} : undefined),
+                thinking: Array.isArray(m.thinking) ? m.thinking : undefined,
               }));
           }
           setMessagesBySession(msgs);
@@ -740,8 +769,7 @@ export default function AssistantPage() {
     else handleCreatePersona();
   }
   function uiSavePersona(updated: Persona) {
-    if (studioOpen) void handleSaveStudioPersona(updated);
-    else void handleSavePersona(updated);
+    return studioOpen ? handleSaveStudioPersona(updated) : handleSavePersona(updated);
   }
   function uiDeletePersona(id: string) {
     if (studioOpen) void handleDeleteStudioPersona(id);
@@ -887,6 +915,7 @@ export default function AssistantPage() {
   }
 
   function stopProgressPolling(sessionId: string) {
+    setLiveReplyBySession((prev) => { const next = { ...prev }; delete next[sessionId]; return next; });
     const timer = progressTimersRef.current[sessionId];
     if (timer !== undefined) {
       window.clearInterval(timer);
@@ -918,6 +947,7 @@ export default function AssistantPage() {
           active?: boolean;
           steps?: unknown;
           reasoning?: unknown;
+          reply?: unknown;
         };
         if (progressTimersRef.current[sessionId] === undefined) return;
         setLiveThinkingBySession((prev) => ({
@@ -931,6 +961,7 @@ export default function AssistantPage() {
           [sessionId]:
             typeof data.reasoning === "string" ? data.reasoning : "",
         }));
+        setLiveReplyBySession((prev) => ({ ...prev, [sessionId]: typeof data.reply === "string" ? data.reply : "" }));
       } catch {
         // Мост занят обработкой /api/chat — молча ждём следующий тик.
       }
@@ -954,6 +985,23 @@ export default function AssistantPage() {
     if (personas.length === 0) {
       toast.error("Профили ещё не загружены — подождите пару секунд");
       return;
+    }
+    if (activePersona?.engine === "codex") {
+      try {
+        const response = await fetch(`/api/codex/status?profile_id=${encodeURIComponent(activePersona.id)}`);
+        const state = await response.json();
+        if (!state.available || !state.capabilities?.chat) {
+          toast.error(state.error || "Подключите Codex и войдите в ChatGPT в настройках профиля", { description: state.reason });
+          return;
+        }
+        if (sessionAttachments.length) {
+          toast.error("Вложения Codex пока недоступны; используйте выбранную папку проекта");
+          return;
+        }
+      } catch {
+        toast.error("Не удалось проверить защищённое подключение Codex");
+        return;
+      }
     }
 
     let accumulatedFilesPrefix = "";
@@ -1072,6 +1120,7 @@ export default function AssistantPage() {
       thinking?: string[],
       marketplaceProduct?: Message["marketplaceProduct"],
       reasoning?: string,
+      activity?: Message["activity"],
     ) => {
       assistantPushed = true;
       const message: Message = {
@@ -1085,6 +1134,7 @@ export default function AssistantPage() {
         thinking: thinking && thinking.length ? thinking : undefined,
         reasoning: reasoning && reasoning.trim() ? reasoning : undefined,
         marketplaceProduct,
+        activity,
       };
       setMessagesBySession((prev) => ({
         ...prev,
@@ -1098,6 +1148,7 @@ export default function AssistantPage() {
         .trim()
         .slice(0, 48);
       const payload: any = {
+        operation_id: crypto.randomUUID(),
         session_id: sessionId,
         prompt: finalPromptForBackend,
         persona_id: activePersona.id,
@@ -1161,6 +1212,7 @@ export default function AssistantPage() {
         Array.isArray(data.thinking) ? data.thinking : undefined,
         data.marketplaceProduct || undefined,
         typeof data.reasoning === "string" ? data.reasoning : undefined,
+        data.activity,
       );
 
       // Заметки от ассистента (tool save_note): поддерживаем пачку notes[]
@@ -1189,9 +1241,20 @@ export default function AssistantPage() {
       }
 
       if (logsOpen) fetchLogs();
+      if (data.refresh_notes) {
+        const notesResponse = await fetch("/api/notes");
+        const notesData = await notesResponse.json();
+        if (Array.isArray(notesData.notes)) setNotes(notesData.notes);
+      }
     } catch (err) {
       // «Стоп» — штатная отмена: не пушим ошибку в ленту и не показываем тост.
       if (chatController.signal.aborted) return;
+      if (activePersona?.engine === "codex" && !assistantPushed) {
+        // Потеря HTTP-ответа не должна оставлять живое подтверждение/ход.
+        // Отменяем, но не отправляем команду повторно: исход может быть неизвестен.
+        void fetch("/api/stop", { method:"POST", headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({session_id:sessionId}), keepalive:true }).catch(() => undefined);
+      }
       const message = err instanceof Error ? err.message : "Ошибка связи с сервером Python";
       // Гарантия: в ленте всегда появляется ответ — даже при ошибке транспорта,
       // иначе финальный ответ ассистента просто пропадал бы из интерфейса.
@@ -1249,7 +1312,7 @@ export default function AssistantPage() {
   async function handleDeletePersona(id: string) {
     if (personas.length <= 1) {
       toast.error("Нельзя удалить единственный профиль");
-      return;
+      return false;
     }
     try {
       const res = await fetch("/api/delete_persona", {
@@ -1263,8 +1326,10 @@ export default function AssistantPage() {
       setPersonas(remaining);
       if (activePersonaId === id) handleSelectPersona(String(data.active_profile || remaining[0].id));
       toast.success("Профиль удалён");
+      return true;
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Не удалось удалить профиль");
+      return false;
     }
   }
 
@@ -1291,11 +1356,8 @@ export default function AssistantPage() {
     // Сохранять можно только профиль, реально пришедший с бэкенда: иначе
     // устаревшая/демо-копия персоны затёрла бы настоящие настройки.
     if (!personas.some((p) => p.id === updated.id)) {
-      toast.error("Профиль не загружен — сохранение отменено");
-      return;
+      throw new Error("Профиль не загружен — сохранение отменено");
     }
-    // Обновляем стейт немедленно
-    setPersonas((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
     try {
       window.localStorage.removeItem("kid-personas");
     } catch {
@@ -1311,10 +1373,15 @@ export default function AssistantPage() {
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
-        toast.error(`Ошибка сохранения профиля: ${err.error ?? res.status}`);
+        throw new Error(`Ошибка сохранения профиля: ${err.error ?? res.status}`);
       }
-    } catch {
-      toast.error("Нет связи с сервером — профиль сохранён только в памяти");
+      const saved: Persona = { ...updated, apiKey: "", clearApiKey: false, codex: updated.codex ? {
+        ...updated.codex, proxy_password: "", clear_proxy_password: false,
+        has_proxy_password: !updated.codex.clear_proxy_password && Boolean(updated.codex.proxy_password || updated.codex.has_proxy_password),
+      } : undefined };
+      setPersonas((prev) => prev.map((p) => (p.id === updated.id ? saved : p)));
+    } catch (error) {
+      throw error instanceof Error ? error : new Error("Нет связи с сервером — профиль не сохранён");
     }
   }
 
@@ -1360,6 +1427,8 @@ export default function AssistantPage() {
       )}
 
       <Header
+        codexProfileId={!studioOpen && activePersona?.engine === "codex" ? activePersona.id : undefined}
+        onOpenCode={() => setCodeOpen(true)}
         onOpenDrawer={() => {
           setDrawerOpen(true);
           setNotesOpen(false);
@@ -1385,6 +1454,8 @@ export default function AssistantPage() {
         onClose={() => setLogsOpen(false)}
         onRefresh={fetchLogs}
       />
+
+      {activePersona?.engine === "codex" && !studioOpen && <CodePanel key={activePersona.id} open={codeOpen} onClose={() => setCodeOpen(false)} profileId={activePersona.id} sessionId={activeSessionId} onRecover={() => fetchState()} />}
 
       <NotesPanel
         open={notesOpen}
@@ -1413,10 +1484,12 @@ export default function AssistantPage() {
               }
             >
               <ChatFeed
+                codex={activePersona?.engine === "codex"}
                 messages={messages}
                 isThinking={isGenerating}
                 liveSteps={liveThinking}
                 liveReasoning={liveReasoning}
+                liveReply={liveReplyBySession[activeSessionId] ?? ""}
                 fontSizeIndex={fontSizeIndex}
                 scrollContainerRef={feedScrollRef}
               />
@@ -1446,6 +1519,7 @@ export default function AssistantPage() {
       </div>
 
       <SidebarDrawer
+        useProfileAccents={!studioOpen}
         open={drawerOpen}
         onOpenChange={setDrawerOpen}
         personas={uiPersonas}
@@ -1480,6 +1554,9 @@ export default function AssistantPage() {
           (состояние ещё грузится) persona была бы undefined и роняла SSR. */}
       {uiActivePersona && (
         <ProfilesModal
+          onDelete={studioOpen ? undefined : handleDeletePersona}
+          canDelete={personas.length > 1}
+          allowCodex={!studioOpen}
           open={profilesOpen}
           onOpenChange={setProfilesOpen}
           persona={uiActivePersona}

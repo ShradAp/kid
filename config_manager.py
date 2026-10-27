@@ -39,6 +39,7 @@ CONFIG_SNAPSHOT_LIMIT = 60
 #: Минимальный интервал между снапшотами, сек (чтобы не забивать диск частыми записями).
 CONFIG_SNAPSHOT_MIN_INTERVAL = 300
 _CONFIG_WRITE_LOCK = threading.RLock()
+_CHAT_HISTORY_WRITE_LOCK = threading.RLock()
 
 
 def _history_filename(session_id: str) -> Path:
@@ -60,9 +61,19 @@ def save_chat_history(session_id: str, history: list) -> None:
         history = []
     CHAT_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
     target = _history_filename(session_id)
-    temporary = target.with_name(target.name + ".tmp")
-    temporary.write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(temporary, target)
+    temporary = target.with_name(target.name + f".{os.getpid()}.{threading.get_ident()}.tmp")
+    with _CHAT_HISTORY_WRITE_LOCK:
+        try:
+            with temporary.open("w", encoding="utf-8") as stream:
+                json.dump(history, stream, ensure_ascii=False, indent=2)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, target)
+        finally:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def _safe_session_id(session_id: str) -> str:
@@ -213,9 +224,11 @@ def _migrate_chat_storage(config: dict) -> dict:
             pass
     if LEGACY_HISTORY_DIR.exists():
         for legacy_file in LEGACY_HISTORY_DIR.glob("history_*.json"):
+            session_id = "legacy_" + legacy_file.stem.removeprefix("history_")
+            if _history_filename(session_id).exists():
+                continue
             try:
                 messages = json.loads(legacy_file.read_text(encoding="utf-8"))
-                session_id = "legacy_" + legacy_file.stem.removeprefix("history_")
                 if isinstance(messages, list) and messages and not _history_filename(session_id).exists():
                     save_chat_history(session_id, messages)
                     metadata.setdefault(session_id, {"personaId": "main", "title": session_id, "timestamp": "Ранее"})
@@ -359,6 +372,9 @@ def _ensure_profile_fields(config: dict) -> dict:
         config["search_api_key"] = (first_profile.get("search_api_key") if isinstance(first_profile, dict) else "") or ""
     for name, profile in list(profiles.items()):
         profiles[name] = profile if isinstance(profile, dict) else {}
+        # Legacy profiles keep their API connection. Codex has a separate
+        # settings object and never changes another client's global config.
+        profiles[name].setdefault("engine", "api")
         # Удалённые режимы не должны возвращаться из старого конфига.
         for field in list(profiles[name]):
             if field == "is_coder" or field.startswith(("coder_", "architect_")):

@@ -1,6 +1,9 @@
 export type AssistantStatus = "ready" | "thinking" | "fetching";
 
 export interface Persona {
+  color?: string;
+  engine?: "api" | "codex";
+  codex?: CodexSettings;
   maxSteps?: number
   attachMaxImages?: number
   attachMaxTextChars?: number
@@ -21,6 +24,18 @@ export interface Persona {
   hasApiKey?: boolean;
   clearApiKey?: boolean;
   modelName: string;
+}
+
+export interface CodexSettings {
+  auto_approve_commands?: boolean;
+  model: string;
+  effort: string;
+  search: "codex" | "kid";
+  proxy: string;
+  proxy_password?: string;
+  has_proxy_password?: boolean;
+  clear_proxy_password?: boolean;
+  workspace: string;
 }
 
 export interface ChatSession {
@@ -49,6 +64,7 @@ export interface MarketplaceProduct {
 }
 
 export interface Message {
+  activity?: { duration_ms?: number; status?: string };
   id: string;
   role: "user" | "assistant";
   content: string;

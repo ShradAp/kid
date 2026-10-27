@@ -2,6 +2,7 @@
   "active_profile": "main",
   "profiles": {
     "main": {
+      "engine": "api",
       "base_url": "https://openrouter.ai/api/v1",
       "model": "",
       "api_key": "",
