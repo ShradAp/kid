@@ -30,7 +30,7 @@ class SessionTests(unittest.TestCase):
         self.fail = False
         def request(method, params=None, **kwargs):
             self.calls.append((method, params))
-            if method in ("thread/start", "thread/resume"):
+            if method in ("thread/start", "thread/resume", "thread/fork"):
                 return {"thread": {"id": "thread-one"}}
             if method == "turn/start":
                 if self.fail:
@@ -139,7 +139,7 @@ class SessionTests(unittest.TestCase):
     def test_memory_is_refreshed_on_resume_without_changing_thread_identity(self):
         from memory.user_profile import format_facts_block
         self.session.runtime.native = True
-        self.session.runtime.thread_context = Mock(return_value={})
+        self.session.runtime.thread_context = Mock(return_value={"cwd": str(self.session.home / "working"), "config": {"mcp_servers": {}}})
         self.session.history_reader = Mock(return_value=[])
         block = format_facts_block([{"fact": "Пользователь использует Samsung Galaxy S25 Ultra", "category": "hardware"}])
         self.memory_context.return_value = "\n\n" + block
@@ -364,6 +364,8 @@ class SessionTests(unittest.TestCase):
     def test_unacknowledged_interrupt_remains_uncertain(self):
         cancel = threading.Event(); cancel.set()
         def request(method, params=None, **kwargs):
+            if method in ("config/read", "skills/list"):
+                return {}
             if method == "thread/start":
                 return {"thread": {"id": "thread-one"}}
             if method == "turn/start":
@@ -448,16 +450,19 @@ class SessionTests(unittest.TestCase):
         self.assertTrue(text.endswith("Continue"))
         self.assertFalse(any(method == "thread/resume" for method, _ in self.calls))
 
-    def test_updated_instructions_migrate_saved_native_thread_with_history(self):
-        self.session.history_reader = lambda _: [{"role": "assistant", "content": "Earlier answer"}]
+    def test_updated_instructions_fork_saved_native_thread_with_complete_history(self):
+        self.session.history_reader = Mock(return_value=[{"role": "assistant", "content": "Earlier answer"}])
         self.session.run("rules-chat", "first", "rules-one", threading.Event())
         self.calls.clear()
         self.session.profile["system_prompt"] = "Updated profile instructions"
         self.session.run("rules-chat", "next", "rules-two", threading.Event())
-        self.assertTrue(any(method == "thread/start" for method, _ in self.calls))
+        self.assertTrue(any(method == "thread/fork" for method, _ in self.calls))
+        self.assertFalse(any(method == "thread/start" for method, _ in self.calls))
         self.assertFalse(any(method == "thread/resume" for method, _ in self.calls))
-        turn = next(params for method, params in self.calls if method == "turn/start")
-        self.assertIn("Earlier answer", turn["input"][1]["text"])
+        fork = next(params for method, params in self.calls if method == "thread/fork")
+        self.assertEqual(fork["threadId"], "thread-one")
+        self.assertIn("Updated profile instructions", fork["developerInstructions"])
+        self.session.history_reader.assert_not_called()
 
     def test_relay_port_change_does_not_reset_native_thread(self):
         self.session.run("port-chat", "first", "port-one", threading.Event())

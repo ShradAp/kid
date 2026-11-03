@@ -106,14 +106,21 @@ def execute_host_tool(name, arguments, profile_id, cancel, *, service, workspace
         return archive("telegram_find_files", {"name":name, "date_from":date_from, "date_to":date_to, "limit":limit})
     def telegram_read_file(archive_id, start_line=1, line_count=40):
         return archive("telegram_read_file", {"archive_id":archive_id, "start_line":start_line, "line_count":line_count})
-    host_tools = ("windows_command", "windows_write_file", "telegram_send_file", "windows_open_app", "telegram_find_files", "telegram_read_file")
+    def install_skill(action, source, name="", description="", fingerprint=""):
+        if not saved or not getattr(saved[1].runtime, "native", False):
+            raise ValueError("Установка скиллов доступна в нативном профиле Codex")
+        from services.skill_imports import install_skill as import_skill
+        return import_skill(service.directory, load_config, save_config, action=action, source=source,
+                            name=name, description=description, fingerprint=fingerprint, cancel=cancel)
+    host_tools = ("windows_command", "windows_write_file", "telegram_send_file", "windows_open_app", "telegram_find_files", "telegram_read_file", "install_skill")
     if name in host_tools and active is None:
         raise ValueError("Нет активного хода для действия Windows")
     try:
         return execute_tool(name, arguments, {"save_note": save_note, "list_notes": read_notes, "set_system_prompt": set_prompt,
                                              "windows_command":windows_command,"windows_write_file":windows_write_file,
                                              "telegram_send_file":telegram_send_file,"windows_open_app":windows_open_app,
-                                             "telegram_find_files":telegram_find_files,"telegram_read_file":telegram_read_file}, cancel)
+                                             "telegram_find_files":telegram_find_files,"telegram_read_file":telegram_read_file,
+                                             "install_skill":install_skill}, cancel)
     except ValueError as error:
         if name in host_tools:
             raise ToolExecutionError(str(error)) from None

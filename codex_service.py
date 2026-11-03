@@ -143,6 +143,8 @@ class ProfileSession:
         self.local_tools = None
         self.history_reader = None
         self.private_values = []
+        self.extension_snapshots = {}
+        self.extension_runtime_states = {}
         try:
             configuration = json.loads((self.directory / "config.json").read_text(encoding="utf-8"))
             self.private_values.extend(configuration.get(key, "") for key in ("search_api_key", "proxy_pass", "proxy_user"))
@@ -294,6 +296,9 @@ class ProfileSession:
                 images.append(image)
 
     def notify(self, method, params):
+        if method == "mcpServer/startupStatus/updated" and str(params.get("name", "")).startswith("ext_"):
+            with self.lock:
+                self.extension_runtime_states[(params.get("threadId"), params["name"])] = params.get("status")
         if method == "account/rateLimits/updated":
             self.limits.accept(self.profile_id, params)
             self.limits_error = False
@@ -413,7 +418,7 @@ class ProfileSession:
         finally:
             serial.release()
 
-    def thread_arguments(self, session_id):
+    def thread_arguments(self, session_id, refresh_extensions=True):
         memory_instructions = (
             "\n\nUse kid's persistent user profile memory across conversations. "
             "Proactively save stable facts explicitly shared by the user (devices, preferences, "
@@ -454,8 +459,12 @@ class ProfileSession:
                 "For speech or subtitles from a video/audio link use kid transcribe_media directly; fetch_webpage only reads pages. "
                 "Transcripts and extracted metadata are saved automatically in kid's private transcriptions folder. "
                 "Use accurate quality unless the user explicitly wants a faster, less accurate result. "
+                "When the user asks to add/install a skill, use kid install_skill to inspect its source, "
+                "briefly report source and composition, then install it into kid's shared library. "
+                "Do not run npx skills add or edit kid configuration. Installation never enables a profile checkbox. "
+                "Tell the user to enable the skill in profile settings; changes apply automatically on the next message. "
                 + str(self.profile.get("system_prompt") or "") + memory_instructions)
-            return arguments
+            return self.extension_arguments(session_id, arguments, refresh_extensions)
         arguments = {"cwd": "/workspace" if self.runtime.workspace else "/home/codex",
                      "approvalPolicy": "untrusted", "sandbox": "danger-full-access"}
         arguments["config"] = {"mcp_servers": {"kid": {
@@ -477,10 +486,74 @@ class ProfileSession:
         arguments["developerInstructions"] = host_instructions + ("\n\n" + system if system else "") + memory_instructions
         return arguments
 
+    def extension_arguments(self, session_id, arguments, refresh_extensions=True):
+        from services.extensions import attach, snapshot, secret_values
+        previous = self.bindings.read(session_id).get("extension_snapshot", "")
+        try:
+            path, value = snapshot(self.directory, self.profile_id, self.profile, previous, refresh=refresh_extensions)
+        except (OSError, ValueError, TypeError):
+            raise ProtocolError("Снимок расширений недоступен. Перезапустите сессию в настройках профиля; история сохранится") from None
+        self.extension_snapshots[session_id] = path
+        try:
+            cfg = json.loads((self.directory / "config.json").read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            cfg = {}
+        values = secret_values(cfg)
+        for connection in value["mcp_servers"].values():
+            self.private_values.extend(values.get(reference, "") for reference in connection.get("env_from", {}).values())
+        # Forking a thread can inherit its previous server configuration. Explicitly
+        # disable removed components instead of relying on object merge semantics.
+        if previous and previous != path:
+            try:
+                old = json.loads(Path(previous).read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                old = {}
+            for server in sorted(old.get("mcp_servers", {})):
+                if server not in value["mcp_servers"]:
+                    arguments["config"]["mcp_servers"][server] = {"enabled": False}
+            if old.get("skills") and not value["skills"]:
+                arguments["config"]["mcp_servers"]["kid_skills"] = {"enabled": False}
+        # Suppress implicit Codex catalogs so only kid's profile selection is exposed.
+        effective = self.rpc("config/read", {"cwd": arguments["cwd"], "includeLayers": False}).get("config", {})
+        for name in sorted((effective.get("mcp_servers") or {})):
+            if name != "kid":
+                arguments["config"]["mcp_servers"][name] = {"enabled": False}
+        arguments["config"]["plugins"] = {name: {"enabled": False} for name in sorted(effective.get("plugins") or {})}
+        discovered = self.rpc("skills/list", {"cwds": [arguments["cwd"]], "forceReload": True})
+        paths = sorted({skill["path"] for group in discovered.get("data", []) for skill in group.get("skills", [])})
+        arguments["config"]["skills"] = {"config": [{"path": path, "enabled": False} for path in paths]}
+        return attach(arguments, path, value, values)
+
+    def restart_extensions(self, session_id):
+        """Release only the thread binding. Preserve history and replay protection."""
+        serial = self.session_locks[session_id]
+        if not serial.acquire(blocking=False):
+            raise ProtocolError("Дождитесь завершения текущего ответа")
+        try:
+            binding = self.bindings.read(session_id)
+            if binding.get("status") in ("pending", "active", "uncertain"):
+                raise ProtocolError("Сначала завершите или восстановите текущий запрос")
+            if binding:
+                binding.pop("operation_id", None)
+                binding.update({"extension_snapshot": "", "context": "", "status": "abandoned"})
+                self.bindings.write(session_id, binding)
+            self.extension_snapshots.pop(session_id, None)
+        finally:
+            serial.release()
+
     def _run(self, session_id, prompt, operation_id, cancel, on_step=None, timeout=None, on_text=None, input_items=None):
         self.start()
         if not self.authenticated:
             raise ProtocolError("Войдите в аккаунт ChatGPT в настройках профиля")
+        binding = self.bindings.read(session_id)
+        previous = (binding.get("operations") or {}).get(operation_id, binding if binding.get("operation_id") == operation_id else {})
+        if previous:
+            if previous.get("status") in ("completed", "interrupted"):
+                return previous.get("result", {})
+            raise ProtocolError("Этот запрос уже отправлялся. Проверьте сохранённый результат; автоматический повтор запрещён")
+        if binding.get("status") in ("pending", "active", "uncertain"):
+            self._recover(session_id, reconcile=True)
+            binding = self.bindings.read(session_id)
         # Fingerprint the thread's execution context. A changed context starts
         # a new thread, rather than silently inheriting a different workspace.
         context_data = {key: self.options[key] for key in ("workspace", "search")}
@@ -492,23 +565,16 @@ class ProfileSession:
             from native_codex.schema import tools
             context_data["instructions"] = arguments.get("developerInstructions", "")
             context_data["tools"] = tools(self.options["search"])
+            context_data["extensions"] = self.extension_snapshots.get(session_id, "")
         context = hashlib.sha256(json.dumps(context_data, sort_keys=True).encode()).hexdigest()
         epoch = self.bindings.epoch(session_id)
-        binding = self.bindings.read(session_id)
-        previous = (binding.get("operations") or {}).get(operation_id, binding if binding.get("operation_id") == operation_id else {})
-        if previous:
-            if previous.get("status") in ("completed", "interrupted"):
-                return previous.get("result", {})
-            raise ProtocolError("Этот запрос уже отправлялся. Проверьте сохранённый результат; автоматический повтор запрещён")
-        if binding.get("status") in ("pending", "active", "uncertain"):
-            # The new operation is explicit user input, never a replay of the
-            # uncertain operation. Reconcile the old turn before continuing.
-            self._recover(session_id, reconcile=True)
-            binding = self.bindings.read(session_id)
         migrated_history = ""
+        fork_from = (binding.get("thread_id") if getattr(self.runtime, "native", False)
+                     and (binding.get("runtime") == "windows-native" or binding.get("extension_snapshot"))
+                     and binding.get("context") != context else None)
         if ((getattr(self.runtime, "native", False) or binding.get("status") == "abandoned")
                 and (binding.get("thread_id") or binding.get("status") == "abandoned")
-                and binding.get("context") != context and self.history_reader is not None):
+                and not fork_from and binding.get("context") != context and self.history_reader is not None):
             history = self.history_reader(session_id)
             if isinstance(history, list):
                 excerpt = [{"role": item.get("role"), "content": str(item.get("content") or "")[:12000]}
@@ -528,7 +594,11 @@ class ProfileSession:
             "Current kid profile memory snapshot (replaces earlier snapshots):\n"
             + (memory_context or "No profile facts retrieved.")
             + "\n\nCurrent user request follows; it takes precedence over stored facts.")}
-        if binding.get("thread_id"):
+        if fork_from:
+            # App Server preserves the complete native conversation in this fork,
+            # while applying fresh instructions/MCP configuration before the turn.
+            response = self.rpc("thread/fork", {**arguments, "threadId": fork_from})
+        elif binding.get("thread_id"):
             response = self.rpc("thread/resume", {**arguments, "threadId": binding["thread_id"]})
         else:
             response = self.rpc("thread/start", arguments)
@@ -543,6 +613,10 @@ class ProfileSession:
                 raise ProtocolError("В этом диалоге уже выполняется ход")
             self.active[thread_id] = active
         binding = {"thread_id": thread_id, "context": context, "operation_id": operation_id, "status": "pending", "prompt": str(prompt)}
+        if getattr(self.runtime, "native", False):
+            binding["runtime"] = "windows-native"
+        if session_id in self.extension_snapshots:
+            binding["extension_snapshot"] = self.extension_snapshots[session_id]
         self.bindings.write(session_id, binding, epoch)
         submitted = False
         try:
@@ -619,7 +693,7 @@ class ProfileSession:
         if binding.get("status") == "completed" and "images" in binding.get("result", {}):
             return {**binding["result"], "prompt": binding.get("prompt", "")}
         # Refresh the ephemeral relay port after every process restart.
-        self.rpc("thread/resume", {**self.thread_arguments(session_id), "threadId": binding["thread_id"]})
+        self.rpc("thread/resume", {**self.thread_arguments(session_id, refresh_extensions=False), "threadId": binding["thread_id"]})
         value = self.rpc("thread/read", {"threadId": binding["thread_id"], "includeTurns": True})
         turns = value.get("thread", {}).get("turns", [])
         turn = next((item for item in turns if item.get("id") == binding.get("turn_id")), None)
@@ -721,6 +795,7 @@ class ProfileSession:
         allowed = {"fetch_webpage", "local_search", "create_downloadable_file", "save_note", "list_notes", "remember_user_fact", "manage_memory", "set_system_prompt", "windows_command", "windows_write_file", "telegram_send_file", "windows_open_app", "telegram_find_files", "telegram_read_file"}
         if getattr(self.runtime, "native", False):
             allowed.add("transcribe_media")
+            allowed.add("install_skill")
         if self.options["search"] == "kid":
             allowed.update(("web_search", "fetch_webpage", "analyze_github_repo"))
         if name not in allowed or not isinstance(arguments, dict):
@@ -735,7 +810,7 @@ class ProfileSession:
             self.events[session_id].append({"method": "kid/tool/started", "type": "kidToolCall", "text": step})
             if active.get("on_step"):
                 active["on_step"](step)
-            if name in ("save_note", "list_notes", "set_system_prompt", "windows_command", "windows_write_file", "telegram_send_file", "windows_open_app", "telegram_find_files", "telegram_read_file"):
+            if name in ("save_note", "list_notes", "set_system_prompt", "windows_command", "windows_write_file", "telegram_send_file", "windows_open_app", "telegram_find_files", "telegram_read_file", "install_skill"):
                 if self.local_tools is None:
                     raise ToolExecutionError("Локальный инструмент не подключён")
                 result = self.local_tools(name, arguments, self.profile_id, active["cancel"])
@@ -859,7 +934,10 @@ class CodexService:
                     raise ValueError()
             except (ValueError, OSError):
                 raise CodexBlocked("Повторно выберите рабочую папку системным диалогом") from None
-        fingerprint = hashlib.sha256(json.dumps(profile, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+        # Extension changes are applied per chat after an explicit idle restart.
+        # Polling status must never close a runtime just because checkboxes changed.
+        fingerprint = hashlib.sha256(json.dumps({key: value for key, value in profile.items() if key != "extension_ids"},
+                                               sort_keys=True, ensure_ascii=False).encode()).hexdigest()
         with self.lock:
             saved = self.sessions.get(profile_id)
             if (saved and saved[0] == fingerprint and not saved[1].closed.is_set()

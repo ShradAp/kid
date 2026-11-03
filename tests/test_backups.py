@@ -46,6 +46,8 @@ class BackupTests(IsolatedStorageTestCase):
         (self.user / "telegram.json").write_text('{"token":"fixture"}')
         (self.user / "telegram" / "history").mkdir(parents=True)
         (self.user / "telegram" / "history" / "chat.json").write_text('{"history":[]}')
+        (self.user / "extensions" / "fixture").mkdir(parents=True)
+        (self.user / "extensions" / "fixture" / "SKILL.md").write_text("fixture skill")
         for number in range(7):
             (self.user / "config_snapshots" / f"{number}.json").write_text("{}")
         name, count = self.backup()
@@ -56,6 +58,7 @@ class BackupTests(IsolatedStorageTestCase):
             self.assertTrue({"entry.py", "config.json", "_history/one.json", "_user_data/history/one.json",
                              "_user_data/notes.json", "_user_data/.env", "_user_data/telegram.json",
                              "_user_data/telegram/history/chat.json"} <= names)
+            self.assertIn("_user_data/extensions/fixture/SKILL.md", names)
             self.assertEqual({n for n in names if n.startswith("_config_snapshots/")},
                              {f"_config_snapshots/{number}.json" for number in range(2, 7)})
             self.assertFalse({".env", "debug.log", "pending.tmp"} & names)
@@ -79,6 +82,7 @@ class BackupTests(IsolatedStorageTestCase):
         self.assertEqual(restored.returncode, 0, restored.stderr)
         self.assertEqual(json.loads((restore_user / "telegram.json").read_text()), {"token": "fixture"})
         self.assertEqual(json.loads((restore_user / "telegram" / "history" / "chat.json").read_text()), {"history": []})
+        self.assertEqual((restore_user / "extensions" / "fixture" / "SKILL.md").read_text(), "fixture skill")
 
     def test_rotation_keeps_ten_newest_archives(self):
         self.backups.mkdir()

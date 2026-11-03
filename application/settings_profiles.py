@@ -9,6 +9,7 @@ import codex_engine
 from bridge_security import retained_secret
 from application.studio_profiles import _is_studio_profile
 from application.session_history import _msg_text
+from services.extensions import selection as extension_selection
 
 
 def initial_state(request, sessions, read_history, get_balance, read_notes, load_config):
@@ -28,6 +29,7 @@ def initial_state(request, sessions, read_history, get_balance, read_notes, load
         personas.append(
             {
                 "id": p_id,
+                "extensionIds": p_data.get("extension_ids", []),
                 "engine": p_data.get("engine", "api"),
                 "codex": codex_engine.public_settings(p_data),
                 # Отображаемое имя/эмодзи/описание профиля хранятся в config.json
@@ -196,6 +198,8 @@ def save_persona(request, load_config, save_config, codex_service):
             )
             return
         existing.update({
+            "extension_ids": extension_selection(
+                persona.get("extensionIds", existing.get("extension_ids", [])), cfg.get("extensions", [])),
             # отображаемые поля профиля: имя, эмодзи, описание
             "display_name": str(persona.get("name", existing.get("display_name", "")) or "").strip()
             or profile_name.upper(),

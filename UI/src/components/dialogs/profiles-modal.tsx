@@ -29,6 +29,7 @@ import { ModelSelector } from "@/components/widgets/model-selector";
 import type { Persona } from "@/lib/assistant-data";
 import { CodexSettings, defaultCodexSettings } from "./codex-settings";
 import { profileColors } from "@/lib/profile-colors";
+import { ExtensionsSettings } from "./extensions-settings";
 
 export function ProfilesModal({
   open,
@@ -50,6 +51,7 @@ export function ProfilesModal({
   const [name, setName] = useState(persona.name ?? "");
   const [color, setColor] = useState(persona.color ?? "auto");
   const [engine, setEngine] = useState(persona.engine ?? "api");
+  const [extensionIds, setExtensionIds] = useState(persona.extensionIds ?? []);
   const [codex, setCodex] = useState(persona.codex ?? { ...defaultCodexSettings });
   const [systemPrompt, setSystemPrompt] = useState(persona.systemPrompt ?? "");
   const [temperature, setTemperature] = useState(persona.temperature ?? 0.7);
@@ -74,6 +76,7 @@ export function ProfilesModal({
   useEffect(() => {
     if (open) {
       setEngine(persona.engine ?? "api");
+      setExtensionIds(persona.extensionIds ?? []);
       setCodex({ ...(persona.codex ?? defaultCodexSettings) });
       setName(persona.name ?? "");
       setColor(persona.color ?? "auto");
@@ -103,6 +106,7 @@ export function ProfilesModal({
         ...persona,
         color,
         engine,
+        extensionIds,
         codex,
         name,
         systemPrompt,
@@ -189,6 +193,7 @@ export function ProfilesModal({
             <FieldDescription>Настройки обоих режимов сохраняются отдельно.</FieldDescription>
           </Field>}
           {engine === "codex" && <CodexSettings profileId={persona.id} value={codex} onChange={setCodex} />}
+          <ExtensionsSettings key={persona.id} profileId={persona.id} engine={engine} selected={extensionIds} onSelectionChange={setExtensionIds} />
           {engine === "api" && <>
 
           <Field>

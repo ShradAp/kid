@@ -58,6 +58,10 @@ def make_bridge_handler(*, get_bridge_port, file_access, user_data_dir, backup_d
         def do_GET(self):
             if not self._authorized():
                 return
+            if urllib.parse.urlsplit(self.path).path == "/api/extensions":
+                from application.extension_actions import handle
+                handle(self, "GET", root=user_data_dir, load_config=load_config, save_config=save_config, service=codex, sessions=sessions)
+                return
             if self.path == "/api/telegram/settings" and telegram is not None:
                 from application.telegram_actions import handle
                 handle(self, telegram, "GET")
@@ -240,6 +244,10 @@ def make_bridge_handler(*, get_bridge_port, file_access, user_data_dir, backup_d
                     pass
 
         def _do_POST(self):
+            if self.path == "/api/extensions":
+                from application.extension_actions import handle
+                handle(self, "POST", root=user_data_dir, load_config=load_config, save_config=save_config, service=codex, sessions=sessions)
+                return
             if self.path in ("/api/telegram/settings", "/api/telegram/clear", "/api/telegram/stop", "/api/telegram/test-file", "/api/telegram/panel", "/api/telegram/archive/clear", "/api/telegram/test-integration") and telegram is not None:
                 from application.telegram_actions import handle
                 handle(self, telegram, "POST")

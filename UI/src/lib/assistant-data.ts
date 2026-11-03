@@ -1,6 +1,7 @@
 export type AssistantStatus = "ready" | "thinking" | "fetching";
 
 export interface Persona {
+  extensionIds?: string[];
   color?: string;
   engine?: "api" | "codex";
   codex?: CodexSettings;

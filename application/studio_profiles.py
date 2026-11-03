@@ -3,6 +3,7 @@
 from datetime import datetime
 from bridge_security import retained_secret
 from config_manager import load_studio_history, save_studio_history, purge_studio_session_storage
+from services.extensions import selection as extension_selection
 
 STUDIO_ACTIVE_KEY = "studio_active_profile"
 STUDIO_META_KEY = "studio_sessions_meta"
@@ -20,6 +21,7 @@ def _studio_persona(p_id: str, data: dict, active: str = "") -> dict:
     """Профиль студии в форме фронтенда (как персона основного чата)."""
     return {
         "id": p_id,
+        "extensionIds": data.get("extension_ids", []),
         "name": str(data.get("display_name") or "").strip() or p_id.upper(),
         "emoji": str(data.get("emoji") or "📄"),
         "description": str(data.get("description") or ""),
@@ -85,6 +87,7 @@ class StudioSessions:
         # Studio is an independent API-only profile; never copy Codex proxy secrets
         # or silently interpret a Codex profile as an API connection.
         profile["engine"] = "api"
+        profile["extension_ids"] = []
         profile.pop("codex", None)
         profile[STUDIO_PROFILE_FLAG] = True
         profile["display_name"] = str(profile.get("display_name") or "").strip() or "Документ-студия"
@@ -185,6 +188,8 @@ class StudioSessions:
             if existing and not _is_studio_profile(existing):
                 raise ValueError("Cannot overwrite a main profile from Document Studio")
             profiles[pid] = _studio_profile_from_persona(persona, existing)
+            profiles[pid]["extension_ids"] = extension_selection(
+                persona.get("extensionIds", existing.get("extension_ids", [])), config.get("extensions", []))
             config["profiles"] = profiles
             if config.get(STUDIO_ACTIVE_KEY) not in self.profiles():
                 config[STUDIO_ACTIVE_KEY] = pid

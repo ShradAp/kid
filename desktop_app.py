@@ -37,6 +37,7 @@ _REQUIRED_MODULES = (
     "curl_cffi",     # network_agent/core: TLS-слой с impersonate
     "httpx",         # network_agent/client
     "dotenv",        # network_agent (python-dotenv)
+    "yaml",          # метаданные локальных скиллов (PyYAML)
     "playwright",    # network_agent/browser
 )
 _missing = [name for name in _REQUIRED_MODULES if importlib.util.find_spec(name) is None]

@@ -31,6 +31,7 @@ export function useStudioSessions({ studioOpen, closeDrawer, openProfiles }: {
       const init = await fetchStudioInit();
       const mapped: Persona[] = init.profiles.map((p) => ({
         id: p.id,
+        extensionIds: p.extensionIds ?? [],
         emoji: p.emoji || "📄",
         name: p.name,
         description: p.description,
@@ -154,6 +155,7 @@ export function useStudioSessions({ studioOpen, closeDrawer, openProfiles }: {
     try {
       await saveStudioProfile({
         id: updated.id,
+        extensionIds: updated.extensionIds ?? [],
         name: updated.name,
         emoji: updated.emoji,
         description: updated.description,

@@ -593,6 +593,7 @@ export async function closeStudioDocument(): Promise<boolean> {
  */
 
 export interface StudioProfile {
+  extensionIds?: string[];
   id: string;
   name: string;
   emoji: string;

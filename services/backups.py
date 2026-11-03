@@ -75,7 +75,7 @@ def create_project_backup(base_dir, backup_directory, user_data_dir, log_event) 
     # оставлены для совместимости с предыдущими версиями восстановления.
     for data_name in ("notes.json", "retrieval_metrics.json", ".env", "data",
                       "generated_files", "presets", "studio_history", "history",
-                      "documents", "notes", "telegram.json", "telegram"):
+                      "documents", "notes", "telegram.json", "telegram", "extensions"):
         data_path = user_data_dir / data_name
         data_files = [data_path] if data_path.is_file() else data_path.rglob("*")
         for data_file in data_files:

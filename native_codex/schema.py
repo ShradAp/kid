@@ -9,6 +9,19 @@ def tools(search):
                "inputSchema": item["function"]["parameters"]} for item in TOOLS_SCHEMA]
     result.extend(HOST_TOOLS)
     result = copy.deepcopy(result)
+    result.append({"name": "install_skill", "description": (
+        "Add a skill to kid's shared extension library ONLY when the user explicitly asks to install/add that skill. "
+        "Sources: local SKILL.md/folder, public GitHub skill folder, skills.sh link, or owner/repo@skill. "
+        "First use action=inspect; briefly show the returned source and file composition to the user, then use action=install "
+        "with the same source and returned fingerprint. Already-installed results need no install call. "
+        "Copies instructions/resources without running npm, npx, scripts or package installers. "
+        "Does not enable the skill: the user enables it in profile settings. Never edit kid config or use npx skills add instead. "
+        "Provide a short user-facing description when the upstream description is too long."),
+        "inputSchema": {"type": "object", "properties": {
+            "action": {"type": "string", "enum": ["inspect", "install"]},
+            "source": {"type": "string"}, "name": {"type": "string", "maxLength": 120},
+            "description": {"type": "string", "maxLength": 500}, "fingerprint": {"type": "string"}},
+            "required": ["action", "source"], "additionalProperties": False}})
     result.append({"name": "transcribe_media", "description": (
         "Get the actual speech or published subtitles from a public video/audio URL. "
         "Use this directly when the user asks what a video says, rather than repeatedly reading its HTML or running shell scripts. "
