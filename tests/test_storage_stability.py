@@ -83,6 +83,43 @@ with patch('desktop_app.os.replace',side_effect=OSError('write failed')):
 assert app.load_notes()==[{'id':'preserved'}]
 ''')
 
+    def test_session_clear_delete_and_late_upsert_keep_storage_and_codex_reader_consistent(self):
+        self.run_isolated('''
+import io,json
+from unittest.mock import Mock
+import desktop_app as app
+class Request:
+ def __init__(self,path,data):
+  self.path=path
+  body=json.dumps(data).encode()
+  self.headers={'Content-Length':str(len(body))}
+  self.rfile=io.BytesIO(body);self.wfile=io.BytesIO();self.status=None
+ def _set_cors(self,status=200):self.status=status
+def action(path,data):
+ request=Request(path,data)
+ app.BridgeHandler._do_POST(request)
+ assert request.status==200,request.wfile.getvalue()
+ return json.loads(request.wfile.getvalue())
+app.CODEX_SERVICE.forget=Mock()
+action('/api/session/upsert',{'id':'fixture','personaId':'main','title':'Kept'})
+app.sessions_memory['fixture']=[{'role':'system','content':'rules'},{'role':'user','content':'question'}]
+app.save_history(app.sessions_memory)
+assert app.CODEX_SERVICE.history_reader('fixture')==app.sessions_memory['fixture']
+action('/api/session/activate',{'id':'fixture'})
+assert app.load_config()['last_active_session']=='fixture'
+action('/api/session/clear',{'id':'fixture'})
+assert app.load_chat_history('fixture')==[{'role':'system','content':'rules'}]
+action('/api/session/delete',{'id':'fixture'})
+assert app.load_config()['last_active_session']==''
+assert 'fixture' not in app.sessions_memory and 'fixture' not in app.load_sessions_meta()
+assert app.CODEX_SERVICE.history_reader('fixture')==[]
+assert action('/api/session/upsert',{'id':'fixture'})['deleted']
+assert action('/api/session/activate',{'id':'fixture'})['deleted']
+action('/api/session/clear',{'id':'fixture'})
+assert not (app.USER_DATA_DIR/'history'/'fixture.json').exists()
+assert app.CODEX_SERVICE.forget.call_count==3
+''')
+
 
 if __name__ == "__main__":
     unittest.main()

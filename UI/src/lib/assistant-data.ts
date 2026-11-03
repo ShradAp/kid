@@ -31,10 +31,6 @@ export interface CodexSettings {
   model: string;
   effort: string;
   search: "codex" | "kid";
-  proxy: string;
-  proxy_password?: string;
-  has_proxy_password?: boolean;
-  clear_proxy_password?: boolean;
   workspace: string;
 }
 
@@ -64,6 +60,7 @@ export interface MarketplaceProduct {
 }
 
 export interface Message {
+  images?: Array<{ name: string; url: string; mime?: string }>;
   activity?: { duration_ms?: number; status?: string };
   id: string;
   role: "user" | "assistant";

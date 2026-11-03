@@ -24,6 +24,9 @@ ISOLATION_REASON = (
     "и при необходимости запросит однократное подтверждение защиты Windows. Прямой маршрут запрещён."
 )
 PROTOCOL_VERSION = "0.164.0-alpha.11.1"
+# Generated image items carry base64 data; keep the transport bounded while
+# allowing the 32 MiB image limit plus JSON/base64 overhead.
+MAX_RPC_LINE = 48 * 1024 * 1024
 
 
 class CodexBlocked(RuntimeError):
@@ -54,15 +57,7 @@ def settings(profile):
 
 def public_settings(profile):
     private = settings(profile)
-    result = {key: private[key] for key in ("model", "effort", "search", "proxy", "workspace", "auto_approve_commands")}
-    # Also redact a hand-edited/legacy URL that bypassed form validation.
-    try:
-        parsed = urlsplit(result["proxy"])
-        if parsed.password is not None:
-            result["proxy"] = ""
-    except (TypeError, ValueError):
-        result["proxy"] = ""
-    result["has_proxy_password"] = bool(private.get("proxy_password"))
+    result = {key: private[key] for key in ("model", "effort", "search", "workspace", "auto_approve_commands")}
     return result
 
 
@@ -111,16 +106,13 @@ def update_profile(existing, persona):
 
 def require_isolation(profile, directory=None):
     """Availability check; launch MUST additionally verify the live namespace."""
-    if not settings(profile)["proxy"]:
-        raise CodexBlocked("Прокси не настроен. " + ISOLATION_REASON)
     if directory is None:
         from app_paths import USER_DATA_DIR
         directory = USER_DATA_DIR
-    from codex_proxy import ProxyEndpoint, ProxyUnavailable
+    from codex_proxy import global_endpoint, ProxyUnavailable
     from codex_runtime import runtime_for, IsolationUnavailable
     try:
-        options = settings(profile)
-        endpoint = ProxyEndpoint.parse(options["proxy"], options["proxy_password"])
+        endpoint = global_endpoint(directory)
         runtime_for(directory, Path(directory) / "unused", endpoint).image_metadata()
     except (ProxyUnavailable, IsolationUnavailable):
         raise CodexBlocked() from None
@@ -265,12 +257,12 @@ class StdioConnection:
         try:
             while not self.closed:
                 # Bound each line to prevent runaway child output.
-                line = self.reader.readline(8 * 1024 * 1024 + 1)
+                line = self.reader.readline(MAX_RPC_LINE + 1)
                 if not line:
                     break
                 if self.closed:
                     break
-                if len(line) > 8 * 1024 * 1024:
+                if len(line) > MAX_RPC_LINE:
                     break
                 message = json.loads(line)
                 if not isinstance(message, dict):
@@ -330,8 +322,9 @@ class CodexAdapter:
     def start(self):
         require_isolation(self.profile, self.home.parents[1])
         if not hasattr(self, "session"):
+            from codex_proxy import effective_profile
             from codex_service import ApprovalQueue, ProfileSession
-            self.session = ProfileSession(self.profile_id, self.profile, self.home.parents[1],
+            self.session = ProfileSession(self.profile_id, effective_profile(self.profile, self.home.parents[1]), self.home.parents[1],
                                           LimitsCache(self.home.parents[1]), ApprovalQueue())
         self.session.start()
 

@@ -266,6 +266,22 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(self.request("/api/generated/script/open", method="POST")[0], 403)
         self.assertNotEqual(self.request("/api/generated/script/open")[0], 200)
 
+    def test_codex_image_route_serves_pixels_with_image_mime_and_requires_auth(self):
+        import base64
+        import io
+        from PIL import Image
+        from codex_images import collect_images
+        stream = io.BytesIO()
+        Image.new("RGB", (6, 6), "green").save(stream, format="PNG")
+        images = collect_images(self.user_dir, {"type": "imageGeneration", "status": "completed",
+            "result": base64.b64encode(stream.getvalue()).decode()})
+        url = images[0]["url"]
+        status, headers, body = self.request(url)
+        self.assertEqual((status, body), (200, stream.getvalue()))
+        self.assertEqual(headers["Content-Type"], "image/png")
+        self.assertEqual(self.request(url, authenticated=False)[0], 403)
+        self.assertEqual(self.request("/api/codex-images/../config.json")[0], 404)
+
     def test_invalid_and_oversized_requests_are_rejected_before_reading(self):
         self.assertEqual(self.request("/api/chat", method="POST", headers={"Content-Length": "-1"})[0], 400)
         self.assertEqual(self.request("/api/chat", method="POST", headers={"Content-Length": str(9 * 1024 * 1024)})[0], 413)

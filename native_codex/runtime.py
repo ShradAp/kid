@@ -91,10 +91,11 @@ class NativeRuntime:
     def thread_context(self, session_id, search):
         root = Path(__file__).resolve().parents[1]
         working = self.workspace or self.profile_home / "working"
-        # kid confirms host actions in its own executor. Read-only prevents
-        # built-in edits from bypassing that executor; never prevents a second
-        # incompatible approval flow for the same local MCP action.
-        return {"cwd": str(working), "approvalPolicy": "never", "sandbox": "read-only",
+        # File permissions are independent of the persistent WFP transport
+        # rules. Local MCP actions still pass through kid's confirmed executor.
+        # A read-only context incorrectly tells the model it cannot create files
+        # even though that host executor is available.
+        return {"cwd": str(working), "approvalPolicy": "never", "sandbox": "workspace-write",
                 "config": {"mcp_servers": {"kid": {"command": sys.executable,
                     "args": ["-I", str(root / "kid_mcp_server.py"), "--native", "--port", str(self.tool_port),
                              "--session", str(session_id), "--search", search],

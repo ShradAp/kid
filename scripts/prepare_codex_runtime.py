@@ -24,21 +24,8 @@ from codex_runtime import IsolatedRuntime, IsolationUnavailable, runtime_sources
 
 
 def private_endpoint(profile_id=None, use_app_proxy=False):
-    try:
-        config = json.loads((USER_DATA_DIR / "config.json").read_text(encoding="utf-8"))
-        if use_app_proxy:
-            url = urlsplit(config.get("proxy_url", ""))
-            scheme = "socks5h" if url.scheme == "socks5" else url.scheme
-            username = config.get("proxy_user") or url.username or ""
-            authority = str(url.hostname)
-            if ":" in authority:
-                authority = "[" + authority + "]"
-            endpoint = f"{scheme}://{quote(username, safe='')}@{authority}:{url.port}"
-            return ProxyEndpoint.parse(endpoint, config.get("proxy_pass", ""))
-        value = config["profiles"][profile_id]["codex"]
-        return ProxyEndpoint.parse(value.get("proxy", ""), value.get("proxy_password", ""))
-    except Exception:
-        raise IsolationUnavailable("Настройте числовой IP прокси и пароль в выбранном профиле") from None
+    from codex_proxy import global_endpoint
+    return global_endpoint(USER_DATA_DIR)
 
 
 def prepare(endpoint, base_image, version):

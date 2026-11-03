@@ -8,7 +8,7 @@ import sys
 import threading
 
 from codex_engine import CodexBlocked
-from codex_proxy import ProxyEndpoint
+from codex_proxy import global_endpoint
 from .broker import BROKER_PORT
 from .process import metadata
 from .wfp import ProtectionUnavailable, verify
@@ -55,8 +55,7 @@ def elevate_setup(root):
 
 
 def ensure(root, profile_id, profile):
-    options = profile.get("codex") or {}
-    ProxyEndpoint.parse(options.get("proxy", ""), options.get("proxy_password", ""))
+    global_endpoint(root)
     with _lock:
         try:
             try:

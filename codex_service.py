@@ -16,6 +16,7 @@ from codex_engine import (CodexBlocked, LimitsCache, PROXY_BLOCKED, ProtocolErro
 from codex_proxy import ProxyEndpoint, ProxyUnavailable, probe_exit
 from codex_runtime import IsolatedRuntime, IsolationUnavailable, runtime_for
 from tool_execution import ExecutionJournal, ToolExecutionError, execute_tool
+from codex_images import collect_images
 
 
 def redact(text, secrets=()):
@@ -52,7 +53,8 @@ class ApprovalQueue:
         if params.get("grantRoot") and str(params["grantRoot"]) != "/workspace" and not str(params["grantRoot"]).startswith("/workspace/"):
             return {"decision": "decline"}
         identity = "codex_" + uuid.uuid4().hex
-        public = {"id": identity, "operation": "Codex · " + ("команда" if "commandExecution" in method else "изменение файлов"),
+        operation = "отправка файла в Telegram" if method == "kid/telegramSendFile/requestApproval" else "команда" if "commandExecution" in method else "изменение файлов"
+        public = {"id": identity, "operation": "Codex · " + operation,
                   "command": sanitize(params.get("command") or params.get("itemId") or "Изменение файлов"),
                   "description": sanitize(params.get("reason") or "Действие внутри изолированного проекта"),
                   "consequences": "Разрешение действует однократно. Сетевую изоляцию оно не снимает.",
@@ -163,11 +165,30 @@ class ProfileSession:
         return redact(value, private)
 
     def start(self):
+        # Retry only connection setup, before any user turn can be submitted.
+        with self.start_lock:
+            for attempt in range(2):
+                try:
+                    self._start_once()
+                    return
+                except CodexBlocked as error:
+                    if attempt or isinstance(error.__cause__, IsolationUnavailable):
+                        raise
+                    time.sleep(.5)
+
+    def _start_once(self):
         with self.start_lock:
             if self.connection is not None and not self.connection.closed and not self.runtime.stopped.is_set():
                 return
-            if self.closed.is_set():
-                raise CodexBlocked("Сеанс остановлен; повторите подключение через тот же прокси")
+            if self.closed.is_set() or self.runtime.stopped.is_set() or self.connection is not None:
+                self.close()
+                self.runtime = runtime_for(self.directory, self.home, self.endpoint, self.options.get("workspace") or None)
+                self.runtime.on_tool = self.tool_bridge
+                self.connection = None
+                self.closed = threading.Event()
+                self.account, self.login, self.models = None, None, []
+                self.exit_ip = None
+                self.limits_error = True
             try:
                 self.runtime.start_worker()
                 # Socket pinning is real enforcement on the host side; the
@@ -192,7 +213,7 @@ class ProfileSession:
             except Exception as error:
                 self.close()
                 if isinstance(error, IsolationUnavailable):
-                    raise CodexBlocked(str(error)) from None
+                    raise CodexBlocked(str(error)) from error
                 raise CodexBlocked("Изолированное подключение не установлено") from None
 
     @property
@@ -263,6 +284,15 @@ class ProfileSession:
         if active.get("on_step"):
             active["on_step"](step)
 
+    def _collect_images(self, active, item):
+        roots = [self.home / "native_server" / "generated_images"]
+        if self.options.get("workspace"):
+            roots.append(self.options["workspace"])
+        for image in collect_images(self.home.parents[1], item, roots):
+            images = active.setdefault("images", [])
+            if image not in images:
+                images.append(image)
+
     def notify(self, method, params):
         if method == "account/rateLimits/updated":
             self.limits.accept(self.profile_id, params)
@@ -279,16 +309,31 @@ class ProfileSession:
             active = self.active.get(thread_id)
             if active is None:
                 return
+            # Notifications may arrive before turn/start returns its ID. Do
+            # not let the first arriving (possibly stale) event choose it.
+            if "pending_events" in active and active.get("turn_id") is None:
+                if len(active["pending_events"]) < 2000:
+                    active["pending_events"].append((method, copy.deepcopy(params)))
+                else:
+                    active["cancel"].set()
+                return
+            event_turn = params.get("turnId") or (params.get("turn") or {}).get("id")
+            if active.get("turn_id") is not None and event_turn != active["turn_id"]:
+                return
             if method == "item/agentMessage/delta":
                 self._agent_message(active, params.get("itemId"), delta=params.get("delta") or "")
             elif method == "item/reasoning/summaryTextDelta":
                 active["reasoning"].append(str(params.get("delta") or ""))
             elif method == "turn/completed":
                 active["turn"] = params.get("turn", {})
+                for item in active["turn"].get("items", []):
+                    self._collect_images(active, item)
                 active["done"].set()
             elif method in ("item/started", "item/completed"):
                 item = params.get("item") or {}
                 item_type = item.get("type")
+                if method == "item/completed":
+                    self._collect_images(active, item)
                 if method == "item/started" and item_type in ("commandExecution", "fileChange", "webSearch", "mcpToolCall", "dynamicToolCall"):
                     active["item_count"] += 1
                     if active["item_count"] > max(1, min(200, int(self.profile.get("max_steps", 60)))):
@@ -315,6 +360,12 @@ class ProfileSession:
                                         text=item.get("text") if method == "item/completed" else None,
                                         completed=method == "item/completed")
 
+    def _bind_turn(self, thread_id, active, turn_id):
+        with self.lock:
+            active["turn_id"] = turn_id
+            for method, params in active.pop("pending_events", []):
+                self.notify(method, params)
+
     def _after_login(self):
         try:
             self.account = self.rpc("account/read", {"refreshToken": False}).get("account")
@@ -327,6 +378,8 @@ class ProfileSession:
             raise ProtocolError("Возможность сервера недоступна")
         with self.lock:
             active = self.active.get(params.get("threadId"))
+            if active is not None and active.get("turn_id") is not None and params.get("turnId") != active["turn_id"]:
+                return {"decision": "cancel"}
         if active is None:
             return {"decision": "cancel"}
         if active["cancel"].is_set():
@@ -350,17 +403,28 @@ class ProfileSession:
         self.account, self.login = None, None
         self.limits_error = True
 
-    def run(self, session_id, prompt, operation_id, cancel, on_step=None, timeout=300, on_text=None):
+    def run(self, session_id, prompt, operation_id, cancel, on_step=None, timeout=None, on_text=None, input_items=None):
         with self.lock:
             serial = self.session_locks[session_id]
         if not serial.acquire(blocking=False):
             raise ProtocolError("В этом диалоге уже выполняется ход")
         try:
-            return self._run(session_id, prompt, operation_id, cancel, on_step, timeout, on_text)
+            return self._run(session_id, prompt, operation_id, cancel, on_step, timeout, on_text, input_items)
         finally:
             serial.release()
 
     def thread_arguments(self, session_id):
+        memory_instructions = (
+            "\n\nUse kid's persistent user profile memory across conversations. "
+            "Proactively save stable facts explicitly shared by the user (devices, preferences, "
+            "work and personal context) with remember_user_fact without waiting for a request to remember. "
+            "Do not save guesses, temporary tasks or facts quoted about other people. "
+            "Use manage_memory(action=list) when more profile facts are needed. "
+            "Each user turn includes a current profile memory snapshot from kid; it supersedes earlier snapshots. "
+            "An empty snapshot means no facts were retrieved for this turn; read memory if needed. "
+            "Update, delete or clear existing facts only at the user's request. "
+            "Only claim a fact was saved after a successful tool result."
+        )
         if getattr(self.runtime, "native", False):
             arguments = self.runtime.thread_context(session_id, self.options["search"])
             if self.options["model"]:
@@ -370,9 +434,27 @@ class ProfileSession:
                 "You are working on the user's actual Windows PC. Your cwd is a real Windows path. "
                 "For local commands use kid windows_command (PowerShell or cmd), and for file creation "
                 "use windows_write_file or an approved Windows command. The real Desktop is " + str(windows_desktop()) + ". "
+                "kid's MCP host tools can write to the real Desktop or selected project after kid's approval. "
+                "They are separate from the built-in command sandbox: do not infer that host tools are read-only "
+                "or ask the user to change session permissions. For a requested source file such as .py, "
+                "call windows_write_file; for editing existing files use windows_command. "
+                "windows_command runs hidden and kills child processes when it finishes; it cannot open a persistent GUI. "
+                "When asked to open a visible CMD, PowerShell or Opera GX window, call windows_open_app instead. "
+                "Only claim the window opened if its result has ok=true AND window_visible=true. "
+                "If an action fails, report the actual tool error rather than guessing an access restriction. "
                 "Only claim success after the tool actually succeeds. Never invent Linux paths. "
                 "The Codex service transport is strictly proxied; host commands and browsers use ordinary host networking.\n\n"
-                + str(self.profile.get("system_prompt") or ""))
+                "For every user-requested URL read, call kid fetch_webpage before attempting shell downloads. "
+                "Do not substitute curl, Invoke-WebRequest, Python requests or browser automation for this tool. "
+                "Shell network commands remain available when the user explicitly requests shell/network development or diagnostics. "
+                "It automatically retries failed direct reads through the proxy configured in kid. "
+                "If a page is blocked, use the tool's route diagnostics: a host VPN is not required for its proxy retry. "
+                "Never ask the user to enable a VPN to fix a page before trying this tool. "
+                "Never ask for proxy credentials, inspect proxy settings with shell commands or put proxy addresses in commands. "
+                "For speech or subtitles from a video/audio link use kid transcribe_media directly; fetch_webpage only reads pages. "
+                "Transcripts and extracted metadata are saved automatically in kid's private transcriptions folder. "
+                "Use accurate quality unless the user explicitly wants a faster, less accurate result. "
+                + str(self.profile.get("system_prompt") or "") + memory_instructions)
             return arguments
         arguments = {"cwd": "/workspace" if self.runtime.workspace else "/home/codex",
                      "approvalPolicy": "untrusted", "sandbox": "danger-full-access"}
@@ -392,18 +474,24 @@ class ProfileSession:
             "General Windows shell execution is blocked until OS network isolation is configured. "
             "Never substitute Linux commands for a requested Windows operation."
         )
-        arguments["developerInstructions"] = host_instructions + ("\n\n" + system if system else "")
+        arguments["developerInstructions"] = host_instructions + ("\n\n" + system if system else "") + memory_instructions
         return arguments
 
-    def _run(self, session_id, prompt, operation_id, cancel, on_step=None, timeout=300, on_text=None):
+    def _run(self, session_id, prompt, operation_id, cancel, on_step=None, timeout=None, on_text=None, input_items=None):
         self.start()
         if not self.authenticated:
             raise ProtocolError("Войдите в аккаунт ChatGPT в настройках профиля")
         # Fingerprint the thread's execution context. A changed context starts
         # a new thread, rather than silently inheriting a different workspace.
         context_data = {key: self.options[key] for key in ("workspace", "search")}
+        arguments = self.thread_arguments(session_id)
         if getattr(self.runtime, "native", False):
-            context_data["runtime"] = "windows-native-mcp-v1"
+            context_data["runtime"] = "windows-native-mcp-v2-workspace-write"
+            # Resuming a saved thread can retain its original instructions and
+            # tool catalog. Migrate when either changes, preserving chat history.
+            from native_codex.schema import tools
+            context_data["instructions"] = arguments.get("developerInstructions", "")
+            context_data["tools"] = tools(self.options["search"])
         context = hashlib.sha256(json.dumps(context_data, sort_keys=True).encode()).hexdigest()
         epoch = self.bindings.epoch(session_id)
         binding = self.bindings.read(session_id)
@@ -413,9 +501,13 @@ class ProfileSession:
                 return previous.get("result", {})
             raise ProtocolError("Этот запрос уже отправлялся. Проверьте сохранённый результат; автоматический повтор запрещён")
         if binding.get("status") in ("pending", "active", "uncertain"):
-            raise ProtocolError("Предыдущий ход требует восстановления. Автоматическая повторная отправка запрещена")
+            # The new operation is explicit user input, never a replay of the
+            # uncertain operation. Reconcile the old turn before continuing.
+            self._recover(session_id, reconcile=True)
+            binding = self.bindings.read(session_id)
         migrated_history = ""
-        if (getattr(self.runtime, "native", False) and binding.get("thread_id")
+        if ((getattr(self.runtime, "native", False) or binding.get("status") == "abandoned")
+                and (binding.get("thread_id") or binding.get("status") == "abandoned")
                 and binding.get("context") != context and self.history_reader is not None):
             history = self.history_reader(session_id)
             if isinstance(history, list):
@@ -427,7 +519,15 @@ class ProfileSession:
                     + json.dumps(excerpt, ensure_ascii=False)[-50000:] + "\n\nCurrent user request:\n")
         if binding.get("context") != context:
             binding = {}
-        arguments = self.thread_arguments(session_id)
+        # Send fresh facts as turn input: a loaded thread may retain its old
+        # developer instructions on resume. Memory changes must not restart it
+        # or truncate the conversation through history migration.
+        from memory.user_profile import build_memory_context
+        memory_context = build_memory_context(prompt).strip()
+        memory_input = {"type": "text", "text": (
+            "Current kid profile memory snapshot (replaces earlier snapshots):\n"
+            + (memory_context or "No profile facts retrieved.")
+            + "\n\nCurrent user request follows; it takes precedence over stored facts.")}
         if binding.get("thread_id"):
             response = self.rpc("thread/resume", {**arguments, "threadId": binding["thread_id"]})
         else:
@@ -436,29 +536,34 @@ class ProfileSession:
         started_at = time.monotonic()
         active = {"session_id": session_id, "cancel": cancel, "done": threading.Event(), "text": [],
                   "reasoning": [], "steps": [], "turn": {}, "on_step": on_step, "on_text": on_text, "item_count": 0,
-                  "operation_id": operation_id, "model_calls": 0, "refresh_notes": False}
+                  "operation_id": operation_id, "model_calls": 0, "refresh_notes": False,
+                  "turn_id": None, "pending_events": []}
         with self.lock:
             if thread_id in self.active:
                 raise ProtocolError("В этом диалоге уже выполняется ход")
             self.active[thread_id] = active
         binding = {"thread_id": thread_id, "context": context, "operation_id": operation_id, "status": "pending", "prompt": str(prompt)}
         self.bindings.write(session_id, binding, epoch)
+        submitted = False
         try:
             parameters = {"threadId": thread_id, "clientUserMessageId": operation_id,
-                          "input": [{"type": "text", "text": migrated_history + str(prompt)}]}
+                          "input": [memory_input, {"type": "text", "text": migrated_history + str(prompt)}] + list(input_items or [])}
             if self.options["effort"]:
                 model = next((item for item in self.models if item.get("model") == self.options["model"]), {})
                 allowed = {item.get("reasoningEffort") for item in model.get("supportedReasoningEfforts", [])}
                 if self.options["effort"] not in allowed:
                     raise ProtocolError("Выбранный уровень рассуждений не поддерживается моделью")
                 parameters["effort"] = self.options["effort"]
+            submitted = True
             response = self.rpc("turn/start", parameters)
             turn_id = response["turn"]["id"]
+            self._bind_turn(thread_id, active, turn_id)
             binding.update(status="active", turn_id=turn_id)
             self.bindings.write(session_id, binding, epoch)
-            deadline = time.monotonic() + max(10, min(timeout, 1800))
+            # Chat turns have no deadline unless a caller explicitly sets one.
+            deadline = None if timeout is None else time.monotonic() + max(10, min(timeout, 1800))
             while not active["done"].wait(.15):
-                if cancel.is_set() or time.monotonic() >= deadline:
+                if cancel.is_set() or (deadline is not None and time.monotonic() >= deadline):
                     cancel.set()
                     try:
                         self.rpc("turn/interrupt", {"threadId": thread_id, "turnId": turn_id}, timeout=3)
@@ -476,6 +581,7 @@ class ProfileSession:
                     binding["status"] = "failed"
                 raise ProtocolError("Ход Codex завершился ошибкой; выполненные действия не повторяются")
             result = {"reply": self.sanitize("".join(active["text"])), "thinking": active["steps"],
+                      "images": active.get("images", []),
                       "activity": {"duration_ms": round((time.monotonic() - started_at) * 1000), "status":status},
                       "reasoning": self.sanitize("".join(active["reasoning"])), "cancelled": status == "interrupted",
                       "operation_id": operation_id, "refresh_notes": active["refresh_notes"]}
@@ -487,7 +593,7 @@ class ProfileSession:
         except Exception:
             cancel.set()  # Resolve every outstanding approval for this failed turn.
             if binding.get("status") != "failed":
-                binding["status"] = "uncertain"
+                binding["status"] = "uncertain" if submitted else "failed"
             self.bindings.write(session_id, binding, epoch)
             raise
         finally:
@@ -504,13 +610,13 @@ class ProfileSession:
         finally:
             serial.release()
 
-    def _recover(self, session_id):
+    def _recover(self, session_id, reconcile=False):
         self.start()
         epoch = self.bindings.epoch(session_id)
         binding = self.bindings.read(session_id)
         if not binding.get("thread_id"):
             raise ProtocolError("У этого диалога нет сохранённой сессии Codex")
-        if binding.get("status") == "completed":
+        if binding.get("status") == "completed" and "images" in binding.get("result", {}):
             return {**binding["result"], "prompt": binding.get("prompt", "")}
         # Refresh the ephemeral relay port after every process restart.
         self.rpc("thread/resume", {**self.thread_arguments(session_id), "threadId": binding["thread_id"]})
@@ -521,13 +627,32 @@ class ProfileSession:
             turn = next((item for item in turns if any(
                 step.get("type") == "userMessage" and step.get("id") == binding.get("operation_id")
                 for step in item.get("items", []))), None)
+        if reconcile and turn is None:
+            # No acknowledged turn exists. Retain the operation tombstone so
+            # a late HTTP retry cannot submit it again, and use a fresh thread.
+            if any(item.get("status") not in ("completed", "interrupted", "failed") for item in turns):
+                raise ProtocolError("Сервер ещё выполняет предыдущий ход; повторите новое сообщение после его завершения")
+            binding.update(status="abandoned", thread_id=None, context=None)
+            self.bindings.write(session_id, binding, epoch)
+            return {}
+        if reconcile and turn is not None and turn.get("status") not in ("completed", "interrupted", "failed"):
+            turn_id = turn["id"]
+            self.rpc("turn/interrupt", {"threadId": binding["thread_id"], "turnId": turn_id}, timeout=3)
+            for attempt in range(10):
+                value = self.rpc("thread/read", {"threadId": binding["thread_id"], "includeTurns": True})
+                turn = next((item for item in value.get("thread", {}).get("turns", []) if item.get("id") == turn_id), None)
+                if turn is None or turn.get("status") in ("completed", "interrupted", "failed"):
+                    break
+                time.sleep(.2)
         if turn is None or turn.get("status") not in ("completed", "interrupted", "failed"):
             raise ProtocolError("Исход хода пока неизвестен. Повторное исполнение заблокировано; проверьте позже")
         recovered = {"text":[], "steps":[], "cancel":threading.Event()}
         for index, item in enumerate(turn.get("items", [])):
+            self._collect_images(recovered, item)
             if item.get("type") == "agentMessage":
                 self._agent_message(recovered, item.get("id") or str(index), text=item.get("text") or "", phase=item.get("phase"), completed=True)
         result = {"reply": self.sanitize("".join(recovered["text"])), "thinking": recovered["steps"], "reasoning": "", "cancelled": turn["status"] != "completed",
+                  "images": recovered.get("images", []),
                   "activity": {"status":turn["status"]},
                   "operation_id": binding.get("operation_id")}
         binding.update(status=turn["status"], result=result)
@@ -555,13 +680,15 @@ class ProfileSession:
         thread = self.rpc("thread/start", arguments)
         thread_id = thread["thread"]["id"]
         active = {"session_id": "research", "cancel": cancel, "done": threading.Event(), "text": [], "reasoning": [],
-                  "steps": [], "turn": {}, "on_step": None, "item_count": 0}
+                  "steps": [], "turn": {}, "on_step": None, "item_count": 0,
+                  "turn_id": None, "pending_events": []}
         with self.lock:
             self.active[thread_id] = active
         turn_id = None
         try:
             response = self.rpc("turn/start", {"threadId": thread_id, "input": [{"type": "text", "text": json.dumps(data, ensure_ascii=False)}]})
             turn_id = response["turn"]["id"]
+            self._bind_turn(thread_id, active, turn_id)
             deadline = time.monotonic() + max(1, min(45, timeout))
             while not active["done"].wait(.15):
                 if cancel.is_set() or time.monotonic() >= deadline or self.runtime.stopped.is_set():
@@ -591,7 +718,9 @@ class ProfileSession:
             except Exception:
                 return {"error": "Модельная оценка недоступна"}
         name, arguments = request.get("name"), request.get("arguments", {})
-        allowed = {"local_search", "create_downloadable_file", "save_note", "list_notes", "remember_user_fact", "manage_memory", "set_system_prompt", "windows_command", "windows_write_file"}
+        allowed = {"fetch_webpage", "local_search", "create_downloadable_file", "save_note", "list_notes", "remember_user_fact", "manage_memory", "set_system_prompt", "windows_command", "windows_write_file", "telegram_send_file", "windows_open_app", "telegram_find_files", "telegram_read_file"}
+        if getattr(self.runtime, "native", False):
+            allowed.add("transcribe_media")
         if self.options["search"] == "kid":
             allowed.update(("web_search", "fetch_webpage", "analyze_github_repo"))
         if name not in allowed or not isinstance(arguments, dict):
@@ -606,7 +735,7 @@ class ProfileSession:
             self.events[session_id].append({"method": "kid/tool/started", "type": "kidToolCall", "text": step})
             if active.get("on_step"):
                 active["on_step"](step)
-            if name in ("save_note", "list_notes", "set_system_prompt", "windows_command", "windows_write_file"):
+            if name in ("save_note", "list_notes", "set_system_prompt", "windows_command", "windows_write_file", "telegram_send_file", "windows_open_app", "telegram_find_files", "telegram_read_file"):
                 if self.local_tools is None:
                     raise ToolExecutionError("Локальный инструмент не подключён")
                 result = self.local_tools(name, arguments, self.profile_id, active["cancel"])
@@ -721,6 +850,8 @@ class CodexService:
         return result
 
     def get(self, profile_id, profile):
+        from codex_proxy import effective_profile
+        profile = effective_profile(profile, self.directory)
         selected = settings(profile).get("workspace")
         if selected:
             try:
@@ -731,7 +862,9 @@ class CodexService:
         fingerprint = hashlib.sha256(json.dumps(profile, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
         with self.lock:
             saved = self.sessions.get(profile_id)
-            if saved and saved[0] == fingerprint and not saved[1].closed.is_set() and not saved[1].runtime.stopped.is_set():
+            if (saved and saved[0] == fingerprint and not saved[1].closed.is_set()
+                    and not saved[1].runtime.stopped.is_set()
+                    and (saved[1].connection is None or not saved[1].connection.closed)):
                 return saved[1]
             if saved:
                 saved[1].close()
@@ -743,17 +876,18 @@ class CodexService:
 
     def status(self, profile_id, profile):
         try:
-            if profile_id in self.errors:
-                raise CodexBlocked()
             # Missing settings/image may be reported without starting a worker
             # or probing the Internet. Runtime verification happens at start.
             saved = self.sessions.get(profile_id)
             if saved and saved[1].connection is not None and (saved[1].runtime.stopped.is_set() or saved[1].connection.closed):
-                self.errors[profile_id] = "Соединение закрыто. Повторите подключение через тот же прокси"
-                raise CodexBlocked()
+                self.errors.pop(profile_id, None)
             session = self.get(profile_id, profile)
             session.runtime.image_metadata()
             alive = session.connection is not None and not session.connection.closed and not session.runtime.stopped.is_set()
+            if alive:
+                self.errors.pop(profile_id, None)
+            elif profile_id in self.errors:
+                raise CodexBlocked()
             return {"engine": "codex", "available": True, "proxy_state": "verified" if alive else "not_checked",
                     "error": "", "reason": "Только изолированный запуск; прямой маршрут отсутствует",
                     "auth_state": "authenticated" if session.authenticated else "login_pending" if session.login else "not_authenticated" if alive else "not_checked",
@@ -794,6 +928,8 @@ class CodexService:
         with self.lock:
             for _, session in self.sessions.values():
                 session.close()
+            self.sessions.clear()
+            self.errors.clear()
 
     def forget(self, session_id):
         with self.lock:

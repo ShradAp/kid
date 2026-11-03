@@ -48,7 +48,7 @@ class ProfileTests(unittest.TestCase):
                 codex.update_profile({}, {"codex": {"proxy": url}})
             self.assertNotIn("secret", str(error.exception))
         public = codex.public_settings({"codex": {"proxy": "http://user:secret@localhost:80"}})
-        self.assertEqual(public["proxy"], "")
+        self.assertNotIn("proxy", public)
 
     def test_profile_home_is_private_and_collision_free(self):
         root = Path(tempfile.gettempdir())

@@ -91,6 +91,69 @@ except ImportError:  # pragma: no cover - запуск модуля вне па�
     )
 
 
+try:
+    from .document_sections import (
+        _LIST_MARKER_RE,
+        _LEADING_MARKER_RE,
+        _SECTION_NUMBER_RE,
+        _MAX_HEADING_WORDS,
+        _DEFAULT_STRUCTURAL_TITLES,
+        _UNDERLINE_GAP_RE,
+        _YEAR_RE,
+        _MIN_KEYWORD_LEN,
+        _paragraph_breaks_page,
+        _normalize_match_text,
+        _matches_any,
+        _paragraph_has_underline,
+        _is_year_line,
+        DocumentSections,
+        _TITLE_WINDOW,
+        _MAX_FOOTER_LEN,
+        _has_explicit_page_break,
+        _classify_document_sections,
+        _footer_start_index,
+        _structural_titles,
+        _is_structural_title,
+        _looks_like_toc_entry,
+        _upper_ratio,
+        _heading_shape_ok,
+        _section_heading_level,
+        _is_section_title_line,
+        _has_explicit_list_marker,
+        _split_list_marker,
+    )
+except ImportError:  # Standalone module compatibility.
+    from document_sections import (
+        _LIST_MARKER_RE,
+        _LEADING_MARKER_RE,
+        _SECTION_NUMBER_RE,
+        _MAX_HEADING_WORDS,
+        _DEFAULT_STRUCTURAL_TITLES,
+        _UNDERLINE_GAP_RE,
+        _YEAR_RE,
+        _MIN_KEYWORD_LEN,
+        _paragraph_breaks_page,
+        _normalize_match_text,
+        _matches_any,
+        _paragraph_has_underline,
+        _is_year_line,
+        DocumentSections,
+        _TITLE_WINDOW,
+        _MAX_FOOTER_LEN,
+        _has_explicit_page_break,
+        _classify_document_sections,
+        _footer_start_index,
+        _structural_titles,
+        _is_structural_title,
+        _looks_like_toc_entry,
+        _upper_ratio,
+        _heading_shape_ok,
+        _section_heading_level,
+        _is_section_title_line,
+        _has_explicit_list_marker,
+        _split_list_marker,
+    )
+
 _APP_DIR = Path(__file__).resolve().parents[2]
 OUTPUT_DIRNAME = os.path.join("generated_files", "word_automation")
 
@@ -100,51 +163,134 @@ from app_paths import USER_DATA_DIR
 DEFAULT_OUTPUT_DIR = USER_DATA_DIR / OUTPUT_DIRNAME
 
 
-class DocxStructureError(PresetError):
-    """Передана непонятная или пустая структура контента."""
+try:
+    from .document_content import (
+        RunSpec,
+        ContentBlock,
+        BLOCK_TYPE_ALIASES,
+        SPECIAL_BLOCK_KINDS,
+        _TYPE_TO_LEVEL,
+        SUPPORTED_BLOCK_TYPES,
+        _as_text,
+        _first_present,
+        _as_bool,
+        _as_alignment,
+        _cell_text,
+        _pad_rows,
+        _normalize_rows,
+        parse_inline_runs,
+        _resolve_block_kind,
+        _explicit_runs,
+        _build_table_block,
+        _build_list_block,
+        _build_caption_block,
+        _build_special_block,
+        _block_from_dict,
+        _normalize_item,
+        normalize_structure,
+        _as_list,
+        DocxStructureError,
+        _INLINE_MARK_RE,
+    )
+except ImportError:  # Standalone module compatibility.
+    from document_content import (
+        RunSpec,
+        ContentBlock,
+        BLOCK_TYPE_ALIASES,
+        SPECIAL_BLOCK_KINDS,
+        _TYPE_TO_LEVEL,
+        SUPPORTED_BLOCK_TYPES,
+        _as_text,
+        _first_present,
+        _as_bool,
+        _as_alignment,
+        _cell_text,
+        _pad_rows,
+        _normalize_rows,
+        parse_inline_runs,
+        _resolve_block_kind,
+        _explicit_runs,
+        _build_table_block,
+        _build_list_block,
+        _build_caption_block,
+        _build_special_block,
+        _block_from_dict,
+        _normalize_item,
+        normalize_structure,
+        _as_list,
+        DocxStructureError,
+        _INLINE_MARK_RE,
+    )
 
 
 class DocxFileError(PresetError):
     """Ошибка чтения/записи файла документа."""
 
 
+try:
+    from .document_formatting import (
+        ALIGNMENT_MAP,
+        LINE_RULE_MAP,
+        TABLE_BORDER_EDGES,
+        TABLE_ALIGNMENT_MAP,
+        CELL_VALIGN_MAP,
+        _TBLPR_TAG_SEQ,
+        _TRPR_TAG_SEQ,
+        _RFONT_THEME_ATTRS,
+        _COLOR_THEME_ATTRS,
+        _RUN_MEDIA_TAGS,
+        _insert_in_order,
+        _set_font_on,
+        set_run_font,
+        set_style_font,
+        _style_or_none,
+        apply_line_spacing,
+        apply_paragraph_format,
+        set_table_borders,
+        _flag_element,
+        set_row_properties,
+        element_has_media,
+        remove_paragraph,
+        ensure_document_not_empty,
+    )
+except ImportError:  # Standalone module compatibility.
+    from document_formatting import (
+        ALIGNMENT_MAP,
+        LINE_RULE_MAP,
+        TABLE_BORDER_EDGES,
+        TABLE_ALIGNMENT_MAP,
+        CELL_VALIGN_MAP,
+        _TBLPR_TAG_SEQ,
+        _TRPR_TAG_SEQ,
+        _RFONT_THEME_ATTRS,
+        _COLOR_THEME_ATTRS,
+        _RUN_MEDIA_TAGS,
+        _insert_in_order,
+        _set_font_on,
+        set_run_font,
+        set_style_font,
+        _style_or_none,
+        apply_line_spacing,
+        apply_paragraph_format,
+        set_table_borders,
+        _flag_element,
+        set_row_properties,
+        element_has_media,
+        remove_paragraph,
+        ensure_document_not_empty,
+    )
+
+
 # --------------------------------------------------------------------------------------
 # Соответствия пресет -> перечисления Word
 # --------------------------------------------------------------------------------------
 
-ALIGNMENT_MAP: dict[Alignment, Any] = {
-    Alignment.LEFT: WD_ALIGN_PARAGRAPH.LEFT,
-    Alignment.CENTER: WD_ALIGN_PARAGRAPH.CENTER,
-    Alignment.RIGHT: WD_ALIGN_PARAGRAPH.RIGHT,
-    Alignment.JUSTIFY: WD_ALIGN_PARAGRAPH.JUSTIFY,
-}
-
-LINE_RULE_MAP: dict[LineSpacingRule, Any] = {
-    LineSpacingRule.SINGLE: WD_LINE_SPACING.SINGLE,
-    LineSpacingRule.ONE_POINT_FIVE: WD_LINE_SPACING.ONE_POINT_FIVE,
-    LineSpacingRule.DOUBLE: WD_LINE_SPACING.DOUBLE,
-    LineSpacingRule.MULTIPLE: WD_LINE_SPACING.MULTIPLE,
-    LineSpacingRule.EXACTLY: WD_LINE_SPACING.EXACTLY,
-    LineSpacingRule.AT_LEAST: WD_LINE_SPACING.AT_LEAST,
-}
 
 #: Границы таблицы в порядке записи ``w:tblBorders``.
-TABLE_BORDER_EDGES = ("top", "left", "bottom", "right", "insideH", "insideV")
 
 #: Выравнивание таблицы на странице (``w:jc`` в ``w:tblPr``).
-TABLE_ALIGNMENT_MAP: dict[Alignment, Any] = {
-    Alignment.LEFT: WD_TABLE_ALIGNMENT.LEFT,
-    Alignment.CENTER: WD_TABLE_ALIGNMENT.CENTER,
-    Alignment.RIGHT: WD_TABLE_ALIGNMENT.RIGHT,
-    Alignment.JUSTIFY: WD_TABLE_ALIGNMENT.CENTER,
-}
 
 #: Вертикальное выравнивание текста в ячейке (``w:vAlign``).
-CELL_VALIGN_MAP: dict[CellVerticalAlignment, Any] = {
-    CellVerticalAlignment.TOP: WD_ALIGN_VERTICAL.TOP,
-    CellVerticalAlignment.CENTER: WD_ALIGN_VERTICAL.CENTER,
-    CellVerticalAlignment.BOTTOM: WD_ALIGN_VERTICAL.BOTTOM,
-}
 
 #: Стандартные размеры листа A4 (мм) — используются, если в секции нет размеров.
 A4_SHORT_MM, A4_LONG_MM = 210.0, 297.0
@@ -166,9 +312,6 @@ _CAPTION_RE = re.compile(
 #: Ведущая нумерация элемента списка: «1.», «1)», «1.2.», «а)».
 _NUMBERED_LEAD_RE = re.compile(r"^(?:\d+(?:\.\d+)*[\.\)]|[а-яa-z][\.\)])\s+\S")
 #: Уже проставленный маркер пункта списка (номер или маркер) — чтобы не дублить.
-_LIST_MARKER_RE = re.compile(
-    r"^(?:\d+(?:\.\d+)*[\.\)]|[а-яa-z][\.\)]|[–—•·\-\*o])\s+\S", re.IGNORECASE
-)
 #: «Мягкое» распознавание уже существующего маркера: тире/буллет/номер/буква,
 #: пробел после маркера не обязателен (иначе «-текст» и «а)текст» дублировались).
 _LIST_MARKER_PREFIX_RE = re.compile(
@@ -179,20 +322,10 @@ _LIST_MARKER_PREFIX_RE = re.compile(
 #: Разделение строки на «маркер + текст»: маркер — буллет, номер или буква.
 #: Используется, чтобы снять ИСХОДНЫЙ маркер перед наложением маркера пресета
 #: (иначе получалось «- - пункт» или «1. 1. пункт»).
-_LEADING_MARKER_RE = re.compile(
-    r"^\s*(?P<marker>\d{1,3}(?:\.\d+)*[.\)]|[а-яёa-zА-ЯЁA-Z][.\)]|[–—•·\*\-])"
-    r"(?P<sep>\s+)?(?P<rest>\S.*)$",
-    re.UNICODE,
-)
 #: Числовой маркер («1.», «2)», «1.2.») — признак НАСТОЯЩЕЙ нумерации исходника.
 _NUMERIC_MARKER_RE = re.compile(r"^\d{1,3}(?:\.\d+)*[.\)]$")
 #: Нумерованный заголовок раздела: «1 ГЛАВА…», «1. АНАЛИЗ…», «1.1 Описание…».
-_SECTION_NUMBER_RE = re.compile(
-    r"^(?P<number>\d{1,3}(?:\.\d{1,3})*)(?P<delim>\.|\s)\s*(?P<title>\S.*)$",
-    re.UNICODE,
-)
 #: Максимальное число слов в строке, чтобы считать её заголовком раздела.
-_MAX_HEADING_WORDS = 12
 
 
 #: Соответствие канонического заполнителя табуляции перечислению python-docx.
@@ -205,22 +338,13 @@ _TAB_LEADER_MAP: dict[str, Any] = {
 
 #: Структурные разделы, которые должны начинаться со строго новой страницы
 #: (используется, если пресет не задал собственный список).
-_DEFAULT_STRUCTURAL_TITLES = (
-    "реферат", "содержание", "оглавление", "введение", "заключение",
-    "список", "перечень", "приложение", "обозначен", "сокращен",
-    "определения", "термины", "аннотация", "выводы",
-)
 
 #: Символы, считающиеся пробельными при очистке «грязного» текста.
 _WHITESPACE_CHARS = " \t\u00a0\u2000\u2001\u2002\u2003\u2007\u202f\u205f\u3000"
 
 _MULTISPACE_RE = re.compile(r"[ \t\u00a0\u2000-\u200b\u202f\u205f\u3000]{2,}")
 _LEADING_WS_RE = re.compile(r"^[ \t\u00a0]+")
-_UNDERLINE_GAP_RE = re.compile(r"_{3,}")
 #: Inline-разметка: **жирный**, *курсив*, __жирный__, _курсив_.
-_INLINE_MARK_RE = re.compile(
-    r"(\*\*\*.+?\*\*\*|\*\*.+?\*\*|__[^_]+__|\*[^*\n]+\*|_[^_\n]+_)"
-)
 
 #: Порог «костыльного» смещения текста пробелами (ТЗ: более 3 подряд).
 SPACE_SHIFT_THRESHOLD = 3
@@ -233,846 +357,11 @@ MAX_EMPTY_PARAGRAPHS_AS_SPACE = 4
 # --------------------------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
-class RunSpec:
-    """Фрагмент текста с оформлением (для inline-разметки и явных ``runs``)."""
-
-    text: str = ""
-    bold: bool | None = None
-    italic: bool | None = None
-    underline: bool | None = None
-
-
-@dataclass(frozen=True)
-class ContentBlock:
-    """Нормализованный блок контента (заголовок, абзац, список, таблица, подпись)."""
-
-    kind: str
-    level: int = 0
-    text: str = ""
-    runs: tuple[RunSpec, ...] = ()
-    items: tuple[str, ...] = ()
-    ordered: bool = False
-    header: tuple[str, ...] = ()
-    rows: tuple[tuple[str, ...], ...] = ()
-    caption: str = ""
-    caption_kind: str = "table"
-    caption_number: Any = None
-    alignment: Alignment | None = None
-    bold: bool | None = None
-    italic: bool | None = None
-    first_line_indent_mm: float | None = None
-    #: Сырые данные блока (для титульного листа и спецразделов).
-    payload: dict[str, Any] = field(default_factory=dict)
-
-
-#: Синонимы типов блоков -> канонический ``kind``.
-BLOCK_TYPE_ALIASES: dict[str, str] = {
-    "h1": "heading", "h2": "heading", "h3": "heading",
-    "h4": "heading", "h5": "heading", "h6": "heading",
-    "heading1": "heading", "heading2": "heading", "heading3": "heading",
-    "heading_1": "heading", "heading_2": "heading", "heading_3": "heading",
-    "heading": "heading", "title": "heading", "section": "heading",
-    "chapter": "heading", "subsection": "heading", "subsubsection": "heading",
-    "p": "paragraph", "paragraph": "paragraph", "text": "paragraph",
-    "para": "paragraph", "body": "paragraph", "quote": "paragraph",
-    "table": "table", "tbl": "table", "grid": "table",
-    "list": "list", "ul": "list", "ol": "list", "bullet": "list",
-    "bullets": "list", "numbered": "list", "ordered": "list",
-    "caption": "caption", "figure_caption": "caption", "table_caption": "caption",
-    "page_break": "page_break", "pagebreak": "page_break",
-    "break": "page_break", "new_page": "page_break",
-    # Титульный лист и специальные разделы (реферат/задание/содержание).
-    "titlepage": "title_page", "title_page": "title_page", "cover": "title_page",
-    "титульный": "title_page", "титульник": "title_page", "титул": "title_page",
-    "task": "task", "zadanie": "task", "задание": "task",
-    "referat": "referat", "abstract": "referat", "реферат": "referat",
-    "content": "content", "toc": "content", "содержание": "content",
-    "оглавление": "content", "contents": "content",
-}
-
-#: Типы блоков, которые рендерятся как специальные секции документа.
-SPECIAL_BLOCK_KINDS: frozenset[str] = frozenset(
-    {"title_page", "task", "referat", "content"}
-)
-
-#: Уровень заголовка по исходному имени типа.
-_TYPE_TO_LEVEL: dict[str, int] = {
-    "h1": 1, "h2": 2, "h3": 3, "h4": 4, "h5": 5, "h6": 6,
-    "heading1": 1, "heading2": 2, "heading3": 3,
-    "heading_1": 1, "heading_2": 2, "heading_3": 3,
-    "title": 1, "section": 1, "chapter": 1,
-    "subsection": 2, "subsubsection": 3,
-}
-
-SUPPORTED_BLOCK_TYPES = (
-    "h1, h2, h3 (заголовки); paragraph/p (абзац); list/ul/ol (список); "
-    "table (таблица); caption (подпись); page_break (разрыв страницы)"
-)
-
-
-def _as_text(value: Any) -> str:
-    """Аккуратно приводит значение к тексту (списки склеиваются через пробел)."""
-    if value is None:
-        return ""
-    if isinstance(value, str):
-        return value
-    if isinstance(value, bool):
-        return str(value)
-    if isinstance(value, (int, float)):
-        return str(value)
-    if isinstance(value, (list, tuple)):
-        return " ".join(_as_text(item) for item in value if item is not None)
-    return str(value)
-
-
-def _first_present(data: dict[str, Any], keys: Sequence[str]) -> Any:
-    """Первое непустое значение среди перечисленных ключей словаря."""
-    for key in keys:
-        if key in data and data[key] not in (None, ""):
-            return data[key]
-    return None
-
-
-def _as_bool(value: Any, default: bool | None = None) -> bool | None:
-    """Приводит значение к ``bool``/``None`` (``None`` — «не переопределять»)."""
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return bool(value)
-    text = str(value).strip().lower()
-    if text in ("1", "true", "yes", "y", "да", "on", "вкл"):
-        return True
-    if text in ("0", "false", "no", "n", "нет", "off", "выкл"):
-        return False
-    return default
-
-
-def _as_alignment(value: Any) -> Alignment | None:
-    """Разбирает выравнивание из строки (в том числе русской)."""
-    if value is None:
-        return None
-    if isinstance(value, Alignment):
-        return value
-    text = str(value).strip().lower()
-    if not text:
-        return None
-    mapping = {
-        "left": Alignment.LEFT, "l": Alignment.LEFT,
-        "по левому": Alignment.LEFT, "слева": Alignment.LEFT,
-        "левое": Alignment.LEFT,
-        "center": Alignment.CENTER, "centre": Alignment.CENTER,
-        "c": Alignment.CENTER, "по центру": Alignment.CENTER,
-        "центр": Alignment.CENTER, "центральное": Alignment.CENTER,
-        "right": Alignment.RIGHT, "r": Alignment.RIGHT,
-        "по правому": Alignment.RIGHT, "справа": Alignment.RIGHT,
-        "правое": Alignment.RIGHT,
-        "justify": Alignment.JUSTIFY, "j": Alignment.JUSTIFY,
-        "по ширине": Alignment.JUSTIFY, "justified": Alignment.JUSTIFY,
-        "ширина": Alignment.JUSTIFY,
-    }
-    result = mapping.get(text)
-    if result is None:
-        try:
-            result = Alignment(text)
-        except ValueError:
-            _log(f"word_automation: неизвестное выравнивание '{value}' — пропущено")
-            return None
-    return result
-
-
-def _cell_text(value: Any) -> str:
-    """Текст ячейки таблицы: ``None`` -> пустая строка, списки -> через '; '."""
-    if value is None:
-        return ""
-    if isinstance(value, (list, tuple)):
-        return "; ".join(_as_text(item) for item in value if item is not None)
-    return _as_text(value)
-
-
-def _pad_rows(
-    rows: tuple[tuple[str, ...], ...], columns: int
-) -> tuple[tuple[str, ...], ...]:
-    """Дополняет строки до ``columns`` ячеек (защита от «рваных» таблиц)."""
-    columns = max(1, columns)
-    padded: list[tuple[str, ...]] = []
-    for row in rows:
-        if len(row) < columns:
-            padded.append(row + ("",) * (columns - len(row)))
-        else:
-            padded.append(row[:columns])
-    return tuple(padded)
-
-
-def _normalize_rows(raw: Any, columns: int) -> tuple[tuple[str, ...], ...]:
-    """Приводит строки таблицы к кортежам одинаковой ширины.
-
-    Поддерживаются формы: список списков, список словарей, словарь колонок
-    ``{"col": [...]}`` и плоский список (одно значение = одна строка из 1 ячейки).
-    """
-    if raw is None:
-        return ()
-    if isinstance(raw, dict):
-        keys = list(raw.keys())
-        columns = max(columns, len(keys))
-        height = 0
-        for value in raw.values():
-            if isinstance(value, (list, tuple)):
-                height = max(height, len(value))
-        result: list[tuple[str, ...]] = []
-        for index in range(height):
-            row: list[str] = []
-            for key in keys:
-                values = raw[key]
-                if isinstance(values, (list, tuple)):
-                    row.append(_cell_text(values[index]) if index < len(values) else "")
-                else:
-                    row.append(_cell_text(values) if index == 0 else "")
-            result.append(tuple(row))
-        return _pad_rows(tuple(result), columns)
-    if isinstance(raw, (list, tuple)):
-        rows: list[tuple[str, ...]] = []
-        for item in raw:
-            if isinstance(item, (list, tuple)):
-                rows.append(tuple(_cell_text(cell) for cell in item))
-            elif isinstance(item, dict):
-                rows.append(tuple(_cell_text(value) for value in item.values()))
-            else:
-                rows.append((_cell_text(item),))
-        width = max([columns] + [len(row) for row in rows])
-        return _pad_rows(tuple(rows), width)
-    raise DocxStructureError(
-        "Поле rows таблицы должно быть списком списков/словарей, "
-        f"получено: {type(raw).__name__}"
-    )
-
-
-def parse_inline_runs(text: str) -> tuple[RunSpec, ...]:
-    """Разбирает inline-разметку ``**жирный**`` / ``*курсив*`` на фрагменты.
-
-    Одиночные маркеры без пары остаются обычным текстом, поэтому разметка
-    безопасна для текста вроде ``2 * 3`` или ``И.О. _Фамилия``.
-    """
-    source = _as_text(text)
-    if not source or not _INLINE_MARK_RE.search(source):
-        return (RunSpec(text=source),)
-    specs: list[RunSpec] = []
-    for part in _INLINE_MARK_RE.split(source):
-        if not part:
-            continue
-        if part.startswith("***") and part.endswith("***") and len(part) > 6:
-            specs.append(RunSpec(part[3:-3], bold=True, italic=True))
-        elif part.startswith("**") and part.endswith("**") and len(part) > 4:
-            specs.append(RunSpec(part[2:-2], bold=True))
-        elif part.startswith("__") and part.endswith("__") and len(part) > 4:
-            specs.append(RunSpec(part[2:-2], bold=True))
-        elif part.startswith("*") and part.endswith("*") and len(part) > 2:
-            specs.append(RunSpec(part[1:-1], italic=True))
-        elif part.startswith("_") and part.endswith("_") and len(part) > 2:
-            specs.append(RunSpec(part[1:-1], italic=True))
-        else:
-            specs.append(RunSpec(part))
-    return tuple(specs) or (RunSpec(text=source),)
-
-
-
-# --------------------------------------------------------------------------------------
-# Разбор структуры контента
-# --------------------------------------------------------------------------------------
-
-
-def _resolve_block_kind(data: dict[str, Any]) -> tuple[str, int]:
-    """Определяет канонический тип блока и уровень заголовка.
-
-    Возвращает ``(kind, level)``; ``level`` значим только для ``kind='heading'``.
-    """
-    raw_type = _first_present(data, ("type", "kind", "block", "block_type", "style"))
-    if raw_type is None:
-        # Тип не указан — угадываем по составу полей.
-        if _first_present(data, ("rows", "data", "header", "headers", "columns")) is not None:
-            return "table", 0
-        if _first_present(data, ("items", "entries")) is not None:
-            return "list", 0
-        return "paragraph", 0
-
-    text = str(raw_type).strip().lower().replace("-", "").replace(" ", "").replace("_", "")
-    key = str(raw_type).strip().lower().replace("-", "").replace(" ", "")
-    kind = BLOCK_TYPE_ALIASES.get(text) or BLOCK_TYPE_ALIASES.get(key)
-    if kind is None:
-        raise DocxStructureError(
-            f"Неизвестный тип блока '{raw_type}'. Поддерживаются: {SUPPORTED_BLOCK_TYPES}"
-        )
-    level = _TYPE_TO_LEVEL.get(text) or _TYPE_TO_LEVEL.get(key) or 0
-    return kind, level
-
-
-def _explicit_runs(data: dict[str, Any]) -> tuple[RunSpec, ...]:
-    """Явные фрагменты ``runs`` из блока (если заданы)."""
-    raw = data.get("runs")
-    if not isinstance(raw, (list, tuple)) or not raw:
-        return ()
-    specs: list[RunSpec] = []
-    for item in raw:
-        if isinstance(item, str):
-            specs.append(RunSpec(text=item))
-        elif isinstance(item, dict):
-            specs.append(
-                RunSpec(
-                    text=_as_text(_first_present(item, ("text", "content", "value"))),
-                    bold=_as_bool(item.get("bold")),
-                    italic=_as_bool(item.get("italic")),
-                    underline=_as_bool(item.get("underline")),
-                )
-            )
-        else:
-            specs.append(RunSpec(text=_as_text(item)))
-    return tuple(spec for spec in specs if spec.text)
-
-
-def _build_table_block(data: dict[str, Any]) -> ContentBlock:
-    """Собирает блок таблицы из словаря, выравнивая ширину header/rows."""
-    header_raw = _first_present(data, ("header", "headers", "columns", "thead"))
-    header: tuple[str, ...] = ()
-    if isinstance(header_raw, (list, tuple)):
-        header = tuple(_cell_text(cell) for cell in header_raw)
-    elif header_raw not in (None, ""):
-        header = (_cell_text(header_raw),)
-    rows = _normalize_rows(
-        _first_present(data, ("rows", "data", "body", "tbody")), len(header)
-    )
-    if not header and not rows:
-        raise DocxStructureError("Блок table пуст: передайте header и/или rows.")
-    if header and rows and len(header) != len(rows[0]):
-        width = max(len(header), len(rows[0]))
-        header = _pad_rows((header,), width)[0]
-        rows = _pad_rows(rows, width)
-    return ContentBlock(
-        kind="table",
-        header=header,
-        rows=rows,
-        caption=_as_text(_first_present(data, ("caption", "title"))),
-        caption_kind=str(
-            _first_present(data, ("caption_type", "caption_kind")) or "table"
-        ).strip().lower(),
-        caption_number=_first_present(data, ("number", "caption_number", "n")),
-        alignment=_as_alignment(_first_present(data, ("alignment", "align"))),
-    )
-
-
-def _build_list_block(data: dict[str, Any], kind_hint: str) -> ContentBlock:
-    """Собирает блок списка из словаря (items либо текст по строкам)."""
-    items_raw = _first_present(data, ("items", "entries", "values", "points"))
-    if items_raw is None:
-        text_value = _as_text(_first_present(data, ("text", "content", "value")))
-        items_raw = [line for line in text_value.split("\n") if line.strip()]
-    if isinstance(items_raw, (list, tuple)):
-        items = tuple(_as_text(item).strip() for item in items_raw)
-    else:
-        items = (_as_text(items_raw).strip(),)
-    items = tuple(item for item in items if item)
-    if not items:
-        raise DocxStructureError("Блок list пуст: передайте непустые items.")
-    ordered = _as_bool(_first_present(data, ("ordered", "numbered", "numeric")))
-    if ordered is None:
-        ordered = kind_hint in ("ol", "ordered", "numbered")
-    return ContentBlock(
-        kind="list",
-        items=items,
-        ordered=bool(ordered),
-        alignment=_as_alignment(_first_present(data, ("alignment", "align"))),
-    )
-
-
-
-def _build_caption_block(data: dict[str, Any]) -> ContentBlock:
-    """Собирает блок подписи (рисунок или таблица)."""
-    caption_kind = str(
-        _first_present(data, ("caption_type", "caption_kind", "object")) or "figure"
-    ).strip().lower()
-    return ContentBlock(
-        kind="caption",
-        caption=_as_text(
-            _first_present(data, ("text", "content", "value", "caption"))
-        ),
-        caption_kind=caption_kind,
-        caption_number=_first_present(data, ("number", "caption_number", "n")),
-        alignment=_as_alignment(_first_present(data, ("alignment", "align"))),
-    )
-
-
-
-def _build_special_block(data: dict[str, Any], kind: str) -> ContentBlock:
-    """Собирает блок титульного листа или специального раздела.
-
-    ``title_page`` хранит сырой словарь (шапка/заголовок/подписи/подвал).
-    ``task``/``referat``/``content`` — заголовок раздела, абзацы тела и пункты
-    списка (маркеры не переформатируются, чтобы сохранить дефисы и буквы).
-    """
-    payload = dict(data)
-    if kind == "title_page":
-        return ContentBlock(kind="title_page", payload=payload)
-
-    title = _as_text(_first_present(data, ("title", "heading", "name", "text")))
-    body: list[str] = []
-    raw_body = _first_present(data, ("body", "paragraphs", "lines", "value", "content"))
-    if isinstance(raw_body, (list, tuple)):
-        body = [_as_text(item).strip() for item in raw_body if _as_text(item).strip()]
-    elif raw_body not in (None, ""):
-        body = [line.strip() for line in _as_text(raw_body).split("\n") if line.strip()]
-
-    items: list[str] = []
-    raw_items = _first_present(data, ("items", "entries", "points", "tasks", "list"))
-    if isinstance(raw_items, (list, tuple)):
-        items = [_as_text(item).strip() for item in raw_items if _as_text(item).strip()]
-    elif raw_items not in (None, ""):
-        items = [line.strip() for line in _as_text(raw_items).split("\n") if line.strip()]
-
-    payload["_title"] = title
-    payload["_body"] = tuple(body)
-    payload["_items"] = tuple(items)
-    payload["_ordered"] = bool(
-        _as_bool(_first_present(data, ("ordered", "numbered", "numeric")))
-    )
-    return ContentBlock(
-        kind=kind, text=title, items=tuple(items), payload=payload
-    )
-
-
-def _block_from_dict(data: dict[str, Any], inherited_level: int = 0) -> list[ContentBlock]:
-    """Собирает блок (и его вложенных детей) из словаря."""
-    kind, level = _resolve_block_kind(data)
-    blocks: list[ContentBlock] = []
-
-    if kind == "table":
-        blocks.append(_build_table_block(data))
-    elif kind == "list":
-        hint = str(
-            _first_present(data, ("type", "kind", "block")) or ""
-        ).strip().lower()
-        blocks.append(_build_list_block(data, hint))
-    elif kind == "caption":
-        blocks.append(_build_caption_block(data))
-    elif kind == "page_break":
-        blocks.append(ContentBlock(kind="page_break"))
-    elif kind in SPECIAL_BLOCK_KINDS:
-        blocks.append(_build_special_block(data, kind))
-    elif kind == "heading":
-        text = _as_text(
-            _first_present(data, ("text", "content", "value", "title"))
-        ).strip()
-        if not text and not _explicit_runs(data):
-            raise DocxStructureError(f"Блок заголовка (уровень {level}) без текста.")
-        if not level:
-            level = int(data.get("level") or inherited_level or 1)
-        level = max(1, min(9, level))
-        blocks.append(
-            ContentBlock(
-                kind="heading",
-                level=level,
-                text=text,
-                runs=_explicit_runs(data),
-                alignment=_as_alignment(_first_present(data, ("alignment", "align"))),
-                bold=_as_bool(data.get("bold")),
-                italic=_as_bool(data.get("italic")),
-            )
-        )
-    else:  # paragraph
-        text = _as_text(_first_present(data, ("text", "content", "value"))).strip()
-        if not text and not _explicit_runs(data):
-            raise DocxStructureError("Блок paragraph без текста.")
-        indent = _first_present(
-            data, ("first_line_indent", "first_line_indent_mm", "indent")
-        )
-        blocks.append(
-            ContentBlock(
-                kind="paragraph",
-                text=text,
-                runs=_explicit_runs(data),
-                alignment=_as_alignment(_first_present(data, ("alignment", "align"))),
-                bold=_as_bool(data.get("bold")),
-                italic=_as_bool(data.get("italic")),
-                first_line_indent_mm=float(indent) if indent is not None else None,
-            )
-        )
-
-    # Вложенные дети разворачиваются сразу после самого блока.
-    children = _first_present(
-        data, ("children", "blocks", "content_blocks", "subblocks", "sub")
-    )
-    if isinstance(children, (list, tuple)) and children:
-        child_level = level + 1 if kind == "heading" else inherited_level
-        for child in children:
-            blocks.extend(_normalize_item(child, child_level))
-    return blocks
-
-
-def _normalize_item(item: Any, inherited_level: int = 0) -> list[ContentBlock]:
-    """Приводит один элемент структуры к списку блоков."""
-    if item is None:
-        return []
-    if isinstance(item, ContentBlock):
-        return [item]
-    if isinstance(item, dict):
-        return _block_from_dict(item, inherited_level)
-    if isinstance(item, (list, tuple)):
-        result: list[ContentBlock] = []
-        for child in item:
-            result.extend(_normalize_item(child, inherited_level))
-        return result
-    if isinstance(item, str):
-        text = item.strip()
-        if not text:
-            return []
-        return [ContentBlock(kind="paragraph", text=text)]
-    raise DocxStructureError(
-        "Элемент структуры должен быть строкой, словарём или списком, "
-        f"получено: {type(item).__name__}"
-    )
-
-
-def normalize_structure(structure: Any) -> list[ContentBlock]:
-    """Превращает древовидную/списочную структуру в плоский список блоков.
-
-    Поддерживаются:
-      * ``list`` блоков;
-      * ``dict`` с ключом ``blocks``/``content``/``children`` (и необязательным
-        ``title`` — он становится заголовком h1);
-      * одиночный блок-словарь, строка, вложенные списки любой глубины.
-    """
-    if structure is None:
-        raise DocxStructureError("Передана пустая структура контента (None).")
-
-    if isinstance(structure, dict):
-        blocks: list[ContentBlock] = []
-        title = _first_present(structure, ("title", "document_title", "doc_title"))
-        if title not in (None, ""):
-            blocks.append(ContentBlock(kind="heading", level=1, text=_as_text(title)))
-        body = _first_present(
-            structure,
-            ("blocks", "content", "children", "content_blocks", "sections", "items"),
-        )
-        known_type = _first_present(structure, ("type", "kind", "block", "block_type"))
-        if body is not None and known_type is None:
-            for child in _as_list(body):
-                blocks.extend(_normalize_item(child, 1))
-            if not blocks:
-                raise DocxStructureError(
-                    "Структура документа пуста: ни title, ни blocks не дали контента."
-                )
-            return blocks
-        # Словарь описывает один блок (возможно, с детьми).
-        blocks.extend(_block_from_dict(structure))
-        return blocks
-
-    blocks = []
-    for child in _as_list(structure):
-        blocks.extend(_normalize_item(child))
-    if not blocks:
-        raise DocxStructureError(
-            "Структура документа пуста: передан пустой список или только пустые строки."
-        )
-    return blocks
-
-
-def _as_list(value: Any) -> list[Any]:
-    """Гарантирует список для итерации (строка не разворачивается в символы)."""
-    if isinstance(value, (list, tuple)):
-        return list(value)
-    return [value]
-
-
-
 # --------------------------------------------------------------------------------------
 # Низкоуровневые XML-хелперы (python-docx.oxml)
 # --------------------------------------------------------------------------------------
 
 #: Порядок детей ``w:tblPr`` по схеме OOXML (для корректной вставки tblBorders).
-_TBLPR_TAG_SEQ = (
-    "w:tblStyle", "w:tblpPr", "w:tblOverlap", "w:bidiVisual",
-    "w:tblStyleRowBandSize", "w:tblStyleColBandSize", "w:tblW", "w:jc",
-    "w:tblCellSpacing", "w:tblInd", "w:tblBorders", "w:shd", "w:tblLayout",
-    "w:tblCellMar", "w:tblLook", "w:tblCaption", "w:tblDescription",
-    "w:tblPrChange",
-)
-
-#: Порядок детей ``w:trPr`` по схеме OOXML (для cantSplit / tblHeader).
-_TRPR_TAG_SEQ = (
-    "w:cnfStyle", "w:divId", "w:gridBefore", "w:gridAfter", "w:wBefore",
-    "w:wAfter", "w:cantSplit", "w:trHeight", "w:tblHeader", "w:tblCellSpacing",
-    "w:jc", "w:hidden", "w:ins", "w:del", "w:trPrChange",
-)
-
-#: Тематические атрибуты шрифта, перебивающие явно заданное имя шрифта.
-_RFONT_THEME_ATTRS = ("w:asciiTheme", "w:hAnsiTheme", "w:eastAsiaTheme", "w:cstheme")
-#: Тематические атрибуты цвета, перебивающие явно заданный RGB.
-_COLOR_THEME_ATTRS = ("w:themeColor", "w:themeTint", "w:themeShade")
-#: Признаки медиа/полей внутри рана — такие раны нельзя пересобирать по тексту.
-_RUN_MEDIA_TAGS = (
-    "w:drawing", "w:pict", "w:object", "w:fldChar", "w:instrText",
-    "w:footnoteReference", "w:endnoteReference", "w:commentReference",
-)
-
-
-def _insert_in_order(parent: Any, element: Any, tag_seq: Sequence[str]) -> None:
-    """Вставляет элемент в ``parent`` согласно порядку тегов схемы OOXML."""
-    tag_name = element.tag
-    try:
-        own_name = next(name for name in tag_seq if qn(name) == tag_name)
-    except StopIteration:
-        parent.append(element)
-        return
-    index = list(tag_seq).index(own_name)
-    successors = {qn(name) for name in tag_seq[index + 1:]}
-    for child in parent:
-        if child.tag in successors:
-            child.addprevious(element)
-            return
-    parent.append(element)
-
-
-def _set_font_on(
-    font: Any,
-    rPr_owner: Any,
-    *,
-    font_name: str | None = None,
-    size_pt: float | None = None,
-    color: str | None = None,
-    bold: bool | None = None,
-    italic: bool | None = None,
-    underline: bool | None = None,
-) -> None:
-    """Универсальная установка шрифта для рана или стиля.
-
-    ``font`` — прокси ``run.font``/``style.font``; ``rPr_owner`` — элемент,
-    имеющий ``get_or_add_rPr()`` (``w:r`` у рана, ``w:style`` у стиля).
-
-    Тематические атрибуты (``w:asciiTheme``, ``w:themeColor``) перебивают явные
-    значения в стилях ``Heading N`` — без их удаления пресет не применяется.
-    """
-    if font_name:
-        font.name = font_name
-        rPr = rPr_owner.get_or_add_rPr()
-        rFonts = rPr.find(qn("w:rFonts"))
-        if rFonts is None:
-            rFonts = OxmlElement("w:rFonts")
-            rPr.insert(0, rFonts)
-        for attr in ("w:ascii", "w:hAnsi", "w:eastAsia", "w:cs"):
-            rFonts.set(qn(attr), font_name)
-        for attr in _RFONT_THEME_ATTRS:
-            if rFonts.get(qn(attr)) is not None:
-                del rFonts.attrib[qn(attr)]
-
-    if size_pt is not None:
-        font.size = Pt(size_pt)
-        rPr = rPr_owner.get_or_add_rPr()
-        sz_cs = rPr.find(qn("w:szCs"))
-        if sz_cs is None:
-            sz_cs = OxmlElement("w:szCs")
-            rPr.append(sz_cs)
-        sz_cs.set(qn("w:val"), str(int(round(size_pt * 2))))
-
-    if color:
-        rPr = rPr_owner.get_or_add_rPr()
-        color_el = rPr.find(qn("w:color"))
-        if color == "auto":
-            # «auto» = наследовать цвет из стиля: снимаем явное значение.
-            if color_el is not None:
-                rPr.remove(color_el)
-        else:
-            font.color.rgb = RGBColor.from_string(color)
-            color_el = rPr.find(qn("w:color"))
-            if color_el is not None:
-                for attr in _COLOR_THEME_ATTRS:
-                    if color_el.get(qn(attr)) is not None:
-                        del color_el.attrib[qn(attr)]
-
-    if bold is not None:
-        font.bold = bold
-    if italic is not None:
-        font.italic = italic
-    if underline is not None:
-        font.underline = underline
-
-
-def set_run_font(
-    run: Run,
-    *,
-    font_name: str | None = None,
-    size_pt: float | None = None,
-    color: str | None = None,
-    bold: bool | None = None,
-    italic: bool | None = None,
-    underline: bool | None = None,
-) -> None:
-    """Задаёт шрифт/кегль/цвет/начертание рана (см. :func:`_set_font_on`)."""
-    _set_font_on(
-        run.font,
-        run._r,
-        font_name=font_name,
-        size_pt=size_pt,
-        color=color,
-        bold=bold,
-        italic=italic,
-        underline=underline,
-    )
-
-
-def set_style_font(
-    style: Any,
-    *,
-    font_name: str | None = None,
-    size_pt: float | None = None,
-    color: str | None = None,
-    bold: bool | None = None,
-    italic: bool | None = None,
-) -> None:
-    """Задаёт шрифт/кегль/цвет/начертание стиля ``styles.xml``."""
-    _set_font_on(
-        style.font,
-        style.element,
-        font_name=font_name,
-        size_pt=size_pt,
-        color=color,
-        bold=bold,
-        italic=italic,
-    )
-
-
-def _style_or_none(document: DocumentObject, name: str) -> Any:
-    """Возвращает стиль по имени либо ``None``, если его нет в шаблоне."""
-    try:
-        return document.styles[name]
-    except (KeyError, ValueError):
-        return None
-
-
-
-def apply_line_spacing(pf: Any, line_spacing: float, rule: LineSpacingRule) -> None:
-    """Применяет межстрочный интервал с учётом правила.
-
-    Для ``exactly``/``at_least`` значение трактуется как пункты (``Length``),
-    иначе — как кратность высоты строки (``float``). Порядок важен: сначала
-    задаётся значение, затем правило (иначе python-docx перетрёт значение).
-    """
-    if rule in POINT_BASED_RULES:
-        pf.line_spacing = Pt(line_spacing)
-        pf.line_spacing_rule = LINE_RULE_MAP[rule]
-    else:
-        pf.line_spacing = float(line_spacing)
-
-
-
-def apply_paragraph_format(
-    pf: Any,
-    *,
-    alignment: Alignment | None = None,
-    space_before: float | None = None,
-    space_after: float | None = None,
-    line_spacing: float | None = None,
-    line_spacing_rule: LineSpacingRule | None = None,
-    first_line_indent_mm: float | None = None,
-    left_indent_mm: float | None = None,
-    right_indent_mm: float | None = None,
-    keep_with_next: bool | None = None,
-    widow_control: bool | None = None,
-    page_break_before: bool | None = None,
-) -> None:
-    """Накатывает параметры абзаца; ``None`` означает «не трогать»."""
-    if alignment is not None:
-        pf.alignment = ALIGNMENT_MAP[alignment]
-    if space_before is not None:
-        pf.space_before = Pt(space_before)
-    if space_after is not None:
-        pf.space_after = Pt(space_after)
-    if line_spacing is not None and line_spacing_rule is not None:
-        apply_line_spacing(pf, line_spacing, line_spacing_rule)
-    if first_line_indent_mm is not None:
-        pf.first_line_indent = Mm(first_line_indent_mm)
-    if left_indent_mm is not None:
-        pf.left_indent = Mm(left_indent_mm)
-    if right_indent_mm is not None:
-        pf.right_indent = Mm(right_indent_mm)
-    if keep_with_next is not None:
-        pf.keep_with_next = keep_with_next
-    if widow_control is not None:
-        pf.widow_control = widow_control
-    if page_break_before is not None:
-        pf.page_break_before = page_break_before
-
-
-def set_table_borders(table: Table, cfg: TableStyle) -> None:
-    """Записывает ``w:tblBorders`` (видимые либо ``none``) в правильную позицию."""
-    tblPr = table._tbl.tblPr
-    existing = tblPr.find(qn("w:tblBorders"))
-    if existing is not None:
-        tblPr.remove(existing)
-    borders = OxmlElement("w:tblBorders")
-    value = "single" if cfg.borders else "none"
-    size = str(cfg.border_sz_eighths)
-    for edge in TABLE_BORDER_EDGES:
-        element = OxmlElement(f"w:{edge}")
-        element.set(qn("w:val"), value)
-        element.set(qn("w:sz"), size)
-        element.set(qn("w:space"), "0")
-        element.set(qn("w:color"), cfg.border_color)
-        borders.append(element)
-    _insert_in_order(tblPr, borders, _TBLPR_TAG_SEQ)
-
-
-def _flag_element(tag: str) -> Any:
-    """Создаёт флаг-элемент ``w:cantSplit``/``w:tblHeader`` со значением true."""
-    element = OxmlElement(tag)
-    element.set(qn("w:val"), "true")
-    return element
-
-
-def set_row_properties(
-    row: Any, *, cant_split: bool | None = None, tbl_header: bool | None = None
-) -> None:
-    """Выставляет/снимает ``w:cantSplit`` и ``w:tblHeader`` для строки таблицы."""
-    if cant_split is None and tbl_header is None:
-        return
-    trPr = row._tr.get_or_add_trPr()
-    for tag, enabled in (("w:cantSplit", cant_split), ("w:tblHeader", tbl_header)):
-        if enabled is None:
-            continue
-        existing = trPr.find(qn(tag))
-        if existing is not None:
-            trPr.remove(existing)
-        if enabled:
-            _insert_in_order(trPr, _flag_element(tag), _TRPR_TAG_SEQ)
-
-
-def element_has_media(element: Any) -> bool:
-    """True, если внутри есть картинки/объекты/поля — их нельзя пересобирать."""
-    for tag in _RUN_MEDIA_TAGS:
-        qualified = qn(tag)
-        if element.find(qualified) is not None:
-            return True
-        if element.findall(".//" + qualified):
-            return True
-    return False
-
-
-def remove_paragraph(paragraph: Paragraph) -> None:
-    """Удаляет параграф из тела документа."""
-    element = paragraph._p
-    parent = element.getparent()
-    if parent is not None:
-        parent.remove(element)
-
-
-def ensure_document_not_empty(document: DocumentObject) -> None:
-    """Гарантирует наличие хотя бы одного параграфа (требование OOXML/Word)."""
-    body = document.element.body
-    has_block = any(
-        child.tag in (qn("w:p"), qn("w:tbl")) for child in body.iterchildren()
-    )
-    if not has_block:
-        document.add_paragraph("")
-
 
 
 # --------------------------------------------------------------------------------------
@@ -1187,273 +476,16 @@ def _format_caption_text(
     return captions.format_text(kind, block.caption_number, body), placement
 
 
-
 # --------------------------------------------------------------------------------------
 # Распознавание секций документа (титульный лист / реферат / задание / содержание)
 # --------------------------------------------------------------------------------------
 
 #: Год в подвале титульного листа: «2026», «2026 г.», «2026 год».
-_YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
 #: Минимальная длина ключевого слова (короче — слишком общие, пропускаем).
-_MIN_KEYWORD_LEN = 3
-
-
-def _paragraph_breaks_page(paragraph: Paragraph) -> bool:
-    """True, если абзац начинает новую страницу или содержит разрыв страницы."""
-    element = paragraph._p
-    pPr = element.find(qn("w:pPr"))
-    if pPr is not None and pPr.find(qn("w:pageBreakBefore")) is not None:
-        return True
-    for br in element.findall(".//" + qn("w:br")):
-        if br.get(qn("w:type")) == "page":
-            return True
-    return element.find(".//" + qn("w:lastRenderedPageBreak")) is not None
-
-
-def _normalize_match_text(text: str) -> str:
-    """Приводит строку к виду для сравнения с ключевыми словами."""
-    cleaned = re.sub(r"[^\w\s]+", " ", text or "", flags=re.UNICODE)
-    return re.sub(r"\s+", " ", cleaned).strip().lower()
-
-
-def _matches_any(text: str, keywords: Sequence[str]) -> bool:
-    """True, если начало текста содержит одно из ключевых слов."""
-    normalized = _normalize_match_text(text)
-    if not normalized:
-        return False
-    head = normalized[:60]
-    return any(
-        str(kw).strip().lower() in head
-        for kw in keywords
-        if str(kw).strip() and len(str(kw).strip()) >= _MIN_KEYWORD_LEN
-    )
-
-
-def _paragraph_has_underline(paragraph: Paragraph) -> bool:
-    """True, если в абзаце есть подчёркнутый текст или линия ``____``."""
-    if _UNDERLINE_GAP_RE.search(paragraph.text or ""):
-        return True
-    for run in paragraph.runs:
-        if run.font.underline:
-            return True
-    return False
-
-
-def _is_year_line(text: str) -> bool:
-    """Строка похожа на подвал титульника: содержит год."""
-    return bool(_YEAR_RE.search(text or ""))
-
-
-@dataclass
-class DocumentSections:
-    """Разбиение абзацев документа на титульный лист и специальные разделы."""
-
-    title_page: list[Paragraph] = field(default_factory=list)
-    special: dict[str, list[Paragraph]] = field(default_factory=dict)
-    #: Структурные заголовки (ВВЕДЕНИЕ, ЗАКЛЮЧЕНИЕ, СПИСОК ...) — новая страница.
-    structural: list[Paragraph] = field(default_factory=list)
-    #: Нумерованные подзаголовки (1.1, 1.1.1 ...) — профиль hN БЕЗ новой страницы.
-    subheadings: list[tuple[int, Paragraph]] = field(default_factory=list)
-    #: индекс абзаца в теле (среди ``w:p``) -> тип секции.
-    kind_by_index: dict[int, str] = field(default_factory=dict)
-
-    def kind_for(self, index: int) -> str | None:
-        """Тип секции по индексу абзаца (``None`` — обычный текст)."""
-        return self.kind_by_index.get(index)
-
-    @property
-    def has_special(self) -> bool:
-        """Найдены ли специальные разделы."""
-        return bool(self.special)
 
 
 #: Окно поиска титульного листа (в абзацах) — титул не бывает длиннее.
-_TITLE_WINDOW = 45
 #: Максимальная длина строки подвала титула («Иваново 2026», «Москва, 2026 г.»).
-_MAX_FOOTER_LEN = 40
-
-
-def _has_explicit_page_break(paragraph: Paragraph) -> bool:
-    """True, если в абзаце есть ЯВНЫЙ разрыв страницы.
-
-    В отличие от :func:`_paragraph_breaks_page` не учитывает
-    ``w:lastRenderedPageBreak`` — это служебная метка Word о том, где страница
-    фактически закончилась при последнем рендере. Опора на неё принимала за
-    границу титула любой абзац, случайно оказавшийся вверху страницы.
-    """
-    element = paragraph._p
-    pPr = element.find(qn("w:pPr"))
-    if pPr is not None:
-        pbb = pPr.find(qn("w:pageBreakBefore"))
-        # ``w:val="0"/"false"`` — ВЫКЛЮЧЕННЫЙ разрыв (Word оставляет такой тег после
-        # сброса свойства), настоящим разрывом он не является.
-        if pbb is not None and pbb.get(qn("w:val")) not in ("0", "false", "none"):
-            return True
-    for br in element.findall(".//" + qn("w:br")):
-        if br.get(qn("w:type")) == "page":
-            return True
-    return False
-
-
-def _classify_document_sections(
-    document: DocumentObject, preset: StylePreset
-) -> DocumentSections:
-    """Определяет границы титульного листа и спецразделов по структуре документа.
-
-    Титульный лист — абзацы до первого спецраздела или до первого разрыва
-    страницы. Спецразделы (реферат/задание/содержание) начинаются со своего
-    заголовка-ключа и тянутся до начала следующего спецраздела.
-    """
-    result = DocumentSections()
-    special_cfg = preset.special_sections
-    title_cfg = preset.title_page
-
-    paragraphs = [
-        Paragraph(child, document)
-        for child in document.element.body.iterchildren()
-        if child.tag == qn("w:p")
-    ]
-    if not paragraphs:
-        return result
-
-    # 1. Первый спецраздел — только по СТРОГОМУ совпадению названия раздела.
-    #    Прежний поиск подстроки принимал строку подписи «Задание приняла к
-    #    исполнению … Петрова П.П.» за начало раздела «ЗАДАНИЕ», из-за чего
-    #    титульный лист обрезался на подписях, а «город + год» уезжал на лист 2.
-    first_special: int | None = None
-    if special_cfg.enabled:
-        for index, paragraph in enumerate(paragraphs):
-            for kind in SPECIAL_SECTION_KINDS:
-                if kind not in special_cfg.apply_to:
-                    continue
-                if _is_section_title_line(paragraph.text, special_cfg.titles_for(kind)):
-                    first_special = index
-                    break
-            if first_special is not None:
-                break
-
-    # 2. Явный разрыв страницы и блок подвала («город + год») внутри титула.
-    scan_end = first_special if first_special is not None else len(paragraphs)
-    page_break_at: int | None = None
-    for index in range(scan_end):
-        if _has_explicit_page_break(paragraphs[index]):
-            page_break_at = index
-            break
-
-    search_end = (
-        first_special
-        if first_special is not None
-        else min(len(paragraphs), _TITLE_WINDOW)
-    )
-    footer_at: int | None = None
-    for index in range(search_end):
-        text = paragraphs[index].text.strip()
-        if text and len(text) <= _MAX_FOOTER_LEN and _is_year_line(text):
-            footer_at = index
-
-    # Граница титула — ближайшая из достоверных. Разрыв, стоящий ПЕРЕД подвалом,
-    # границей не считается: титул продлевается до конца блока «город + год», а
-    # сам разрыв снимается при вёрстке (разрыв должен идти ПОСЛЕ года).
-    candidates: list[int] = []
-    if first_special is not None:
-        candidates.append(first_special)
-    if page_break_at is not None and (footer_at is None or page_break_at > footer_at):
-        candidates.append(page_break_at + 1)
-    if footer_at is not None:
-        candidates.append(footer_at + 1)
-    cut = min(candidates) if candidates else 0
-
-    # 3. Титульный лист применяем только при явных признаках: разрыв страницы,
-    #    следующий спецраздел, подвал с годом или подписи на первой странице.
-    title_evidence = page_break_at is not None or first_special is not None
-    if not title_evidence and footer_at is not None:
-        title_evidence = True
-    if not title_evidence and title_cfg.enabled:
-        for paragraph in paragraphs[:cut]:
-            text = paragraph.text.strip()
-            if not text:
-                continue
-            if _is_year_line(text) or _paragraph_has_underline(paragraph):
-                title_evidence = True
-                break
-            if _matches_any(text, title_cfg.signature_keywords):
-                title_evidence = True
-                break
-
-    if title_cfg.enabled and title_evidence and cut > 0:
-        for index in range(cut):
-            result.title_page.append(paragraphs[index])
-            result.kind_by_index[index] = "title_page"
-
-    # 4. Спецразделы и заголовки разделов. Структурный заголовок (ВВЕДЕНИЕ,
-    #    ЗАКЛЮЧЕНИЕ, СПИСКИ, ПРИЛОЖЕНИЯ) закрывает спецраздел и начинается с
-    #    новой страницы. Нумерованные заголовки распознаются только ВНЕ
-    #    спецразделов, чтобы пункт «1. Содержание работы:» бланка задания не
-    #    превращался в заголовок раздела.
-    current: str | None = None
-    #: Шапка первого бланка (ведомство/вуз ПЕРЕД заголовком «ЗАДАНИЕ») лежит между
-    #: концом титульного листа и первым спецразделом. Она относится к этому разделу,
-    #: иначе остаётся «сиротой»: получает стиль основного текста и теряет разрыв
-    #: страницы, а заголовок «ЗАДАНИЕ» уезжает на следующую страницу.
-    leading: list[tuple[int, Paragraph]] = []
-    first_special_seen = False
-    for index in range(cut, len(paragraphs)):
-        paragraph = paragraphs[index]
-        text = paragraph.text.strip()
-        matched: str | None = None
-        if special_cfg.enabled:
-            for kind in SPECIAL_SECTION_KINDS:
-                if kind not in special_cfg.apply_to:
-                    continue
-                if _is_section_title_line(text, special_cfg.titles_for(kind)):
-                    matched = kind
-                    break
-        if matched is not None:
-            current = matched
-            target = result.special.setdefault(current, [])
-            if not first_special_seen:
-                first_special_seen = True
-                # Шапка бланка задания (ведомство/вуз) идёт ПЕРЕД заголовком
-                # «ЗАДАНИЕ»; относим её к этому разделу, а не к «сиротам».
-                # У реферата/содержания шапки нет — для них leading не трогаем.
-                if matched == "task":
-                    for _index, _paragraph in leading:
-                        target.append(_paragraph)
-                        result.kind_by_index[_index] = current
-            leading = []
-            target.append(paragraph)
-            result.kind_by_index[index] = current
-            continue
-        if text:
-            level = _section_heading_level(
-                text, preset, allow_numbered=current is None
-            )
-            if level == 1:
-                current = None
-                leading = []
-                result.structural.append(paragraph)
-                result.kind_by_index[index] = "structure"
-                continue
-            if level is not None and current is None:
-                leading = []
-                result.subheadings.append((level, paragraph))
-                result.kind_by_index[index] = f"heading{level}"
-                continue
-        if current is None:
-            # Возможная шапка первого бланка (до встречи его заголовка). Пустые
-            # абзацы (в т.ч. разрывы страницы) не трогаем — их разберёт чистка
-            # распорок в _sanitize_body.
-            if text:
-                leading.append((index, paragraph))
-            continue
-        # Пустой абзац-разрыв страницы закрывает текущий спецраздел.
-        starts_new_page = _paragraph_breaks_page(paragraph) and not text
-        if starts_new_page and result.special.get(current):
-            current = None
-            continue
-        result.special.setdefault(current, []).append(paragraph)
-        result.kind_by_index[index] = current
-    return result
 
 
 def _set_runs_case(paragraph: Paragraph, case: TextCase) -> None:
@@ -1515,45 +547,6 @@ def _apply_text_block_style(
     )
 
 
-def _footer_start_index(
-    paragraphs: list[Paragraph],
-    signature_keywords: Sequence[str] = (),
-) -> int | None:
-    """Индекс первого абзаца подвала титульного листа («Город, Год»).
-
-    Подвал — это только блок «город + год» в самом конце титула. Раньше функция
-    жадно включала в подвал ещё и предыдущий короткий абзац, из-за чего строка
-    подписи («Петрова П.П. ______________») получала вертикальную распорку
-    подвала (240 pt) ВМЕСТЕ с «Иваново, 2026 г.». Две распорки по 240 pt
-    (~169 мм) не помещались в ~257 мм текста A4, титульный лист перетекал на
-    вторую страницу, а «ЗАДАНИЕ» уезжало на третью.
-    """
-    keywords = tuple(str(k).strip().lower() for k in signature_keywords if str(k).strip())
-    nonempty = [i for i, p in enumerate(paragraphs) if p.text.strip()]
-    if not nonempty:
-        return None
-    last = nonempty[-1]
-    if not _is_year_line(paragraphs[last].text):
-        return None
-    start = last
-    if len(nonempty) >= 2:
-        previous = nonempty[-2]
-        previous_paragraph = paragraphs[previous]
-        previous_text = previous_paragraph.text.strip()
-        # Строку подписи в подвал не тянем: она относится к блоку подписей, а не
-        # к «город + год», и распорка подвала ей не положена.
-        is_signature = _paragraph_has_underline(previous_paragraph) or _matches_any(
-            previous_text, keywords
-        )
-        if (
-            len(previous_text) <= 40
-            and not _is_year_line(previous_text)
-            and not is_signature
-        ):
-            start = previous
-    return start
-
-
 def _strip_auto_numbering(paragraph: Paragraph) -> bool:
     """Снимает с абзаца автоматическую нумерацию/маркер списка (``w:numPr``).
 
@@ -1597,135 +590,6 @@ def _paragraph_has_tab(paragraph: Paragraph) -> bool:
         if run_element.find(qn("w:tab")) is not None:
             return True
     return False
-
-
-def _structural_titles(preset: StylePreset) -> list[str]:
-    """Ключевые слова структурных разделов из пресета (или значения по умолчанию)."""
-    titles = getattr(preset.special_sections, "structural_titles", None)
-    return list(titles) if titles else list(_DEFAULT_STRUCTURAL_TITLES)
-
-
-def _is_structural_title(text: str, preset: StylePreset) -> bool:
-    """True, если строка — заголовок структурного раздела (ВВЕДЕНИЕ, СПИСОК и т.п.)."""
-    return _matches_any(text, _structural_titles(preset))
-
-
-def _looks_like_toc_entry(text: str) -> bool:
-    """True, если строка похожа на строку содержания «Заголовок …… 5»."""
-    stripped = (text or "").strip()
-    if not stripped:
-        return False
-    return bool(re.match(r"^.*?[\s.\u2026]+\s*\d{1,4}\s*$", stripped))
-
-
-def _upper_ratio(text: str) -> float:
-    """Доля заглавных букв среди всех букв строки."""
-    letters = [ch for ch in text if ch.isalpha()]
-    if not letters:
-        return 0.0
-    return sum(1 for ch in letters if ch.isupper()) / len(letters)
-
-
-def _heading_shape_ok(stripped: str) -> bool:
-    """Отсекает предложения и строки содержания, оставляя «форму» заголовка."""
-    if not stripped or len(stripped) > 100:
-        return False
-    if _looks_like_toc_entry(stripped):
-        return False
-    if _upper_ratio(stripped) >= 0.6:
-        return True
-    # Не-заглавные строки: короткие и без завершающей «предложенческой» точки.
-    # Двоеточие в конце тоже отметаем: «1. Содержание работы:» — это пункт
-    # бланка задания, а не заголовок раздела с новой страницы.
-    if stripped.endswith((".", "!", "?", "\u2026", ":")):
-        return False
-    return len(stripped.split()) <= _MAX_HEADING_WORDS
-
-
-def _section_heading_level(
-    text: str, preset: StylePreset, *, allow_numbered: bool = True
-) -> int | None:
-    """Уровень заголовка раздела (1..9) или ``None``.
-
-    Распознаёт два вида заголовков:
-
-    * структурный — «ВВЕДЕНИЕ», «РЕФЕРАТ», «СОДЕРЖАНИЕ», «ЗАКЛЮЧЕНИЕ»,
-      «СПИСОК ИСПОЛЬЗОВАННЫХ ИСТОЧНИКОВ» (по ключевым словам пресета);
-    * нумерованный — «1 ГЛАВА. АНАЛИЗ…», «1. АНАЛИЗ…», «1.1 Описание…».
-      Глубина номера задаёт уровень: «1» -> h1, «1.1» -> h2, «1.1.1» -> h3.
-
-    Обычные предложения, строки содержания и длинные абзацы заголовками не
-    считаются. ``allow_numbered=False`` оставляют только ключевые слова —
-    это безопасно внутри специальных разделов, где «1. Содержание работы:»
-    является пунктом бланка задания, а не заголовком раздела.
-    """
-    stripped = (text or "").strip()
-    if not _heading_shape_ok(stripped):
-        return None
-    if _is_structural_title(stripped, preset):
-        return 1
-    if not allow_numbered:
-        return None
-    match = _SECTION_NUMBER_RE.match(stripped)
-    if not match:
-        return None
-    parts = [part for part in match.group("number").split(".") if part]
-    return max(1, min(len(parts), 9))
-
-
-def _is_section_title_line(text: str, keywords: Sequence[str]) -> bool:
-    """True, если строка — НАЗВАНИЕ специального раздела («РЕФЕРАТ», «ЗАДАНИЕ»).
-
-    :func:`_matches_any` ищет ключевое слово где угодно в первых 60 символах,
-    поэтому строка подписи «Задание приняла к исполнению … Петрова П.П.»
-    распознавалась как начало раздела «ЗАДАНИЕ». Из-за этого граница титульного
-    листа обрезалась на строке подписи, а блок «город + год» выпадал из титула
-    и уезжал на вторую страницу.
-
-    Здесь требование жёстче: строка должна быть похожа на заголовок (короткая,
-    без завершающей точки) и либо совпадать с ключевым словом целиком, либо
-    начинаться с него.
-    """
-    stripped = (text or "").strip()
-    if not _heading_shape_ok(stripped):
-        return False
-    normalized = _normalize_match_text(stripped)
-    if not normalized:
-        return False
-    for keyword in keywords:
-        word = str(keyword or "").strip().lower()
-        if not word or len(word) < _MIN_KEYWORD_LEN:
-            continue
-        if normalized == word or normalized.startswith(word + " "):
-            return True
-    return False
-
-
-def _has_explicit_list_marker(text: str) -> bool:
-    """True, если в НАЧАЛЕ строки исходника явно стоит маркер списка.
-
-    Только явный маркер («1.», «2)», «а)», «-», «–», «•») даёт право считать
-    абзац элементом списка. Если маркера нет, автоматическую нумерацию Word
-    (``w:numPr``) снимаем: иначе в реферате после двоеточия появлялись цифры,
-    которых в исходном документе не было.
-    """
-    return bool(_LIST_MARKER_RE.match((text or "").strip()))
-
-
-def _split_list_marker(text: str) -> tuple[str, str] | None:
-    """Разбирает строку на «маркер» и «текст без маркера».
-
-    Возвращает ``None``, если маркера нет. Используется перед наложением маркера
-    из конфигурации, чтобы исключить сдвоенные символы («- - пункт»).
-    """
-    match = _LEADING_MARKER_RE.match((text or "").strip())
-    if not match:
-        return None
-    marker = match.group("marker").strip()
-    rest = (match.group("rest") or "").strip()
-    if not marker or not rest:
-        return None
-    return marker, rest
 
 
 def _clear_page_breaks(paragraph: Paragraph) -> bool:
@@ -3773,13 +2637,6 @@ class DocxFormatter:
                                 italic=cfg.italic or None,
                             )
         return tables, rows
-
-
-
-
-
-
-
 
 
 # --------------------------------------------------------------------------------------

@@ -18,13 +18,22 @@ class WindowsActionTests(unittest.TestCase):
                 xml=archive.read("word/document.xml").decode("utf-8")
                 self.assertIn("123привет &lt;&amp;&gt;",xml)
 
-    def test_traversal_executable_formats_and_overwrites_are_blocked(self):
+    def test_traversal_binary_formats_and_overwrites_are_blocked(self):
         with tempfile.TemporaryDirectory() as root:
-            for name in ("../escape.md","C:\\escape.txt","test.txt:secret","NUL.txt","bad.ps1","bad.cmd","bad.lnk"):
+            for name in ("../escape.md","C:\\escape.txt","test.txt:secret","NUL.txt","bad.exe","bad.dll","bad.lnk"):
                 with self.assertRaises(ValueError):create_windows_file(root,name,"text")
             create_windows_file(root,"safe.txt","original")
             with self.assertRaises(ValueError):create_windows_file(root,"safe.txt","overwrite")
             self.assertEqual((Path(root)/"safe.txt").read_text(),"original")
+
+    def test_source_files_are_created_without_execution(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as root, patch("subprocess.Popen") as spawn:
+            for name in ("neuron.py", "example.ts", "example.ps1", "example.cmd"):
+                result = create_windows_file(root, name, "print('created, not executed')\n")
+                self.assertTrue(result["ok"])
+                self.assertEqual(Path(result["path"]).read_text(encoding="utf-8"), "print('created, not executed')\n")
+            spawn.assert_not_called()
 
     def test_general_shell_and_network_mutating_arguments_are_blocked(self):
         for command in ("ipconfig /renew","ipconfig & curl example.com","powershell.exe","cmd /c ipconfig","ipconfig /registerdns"):

@@ -17,6 +17,54 @@ import ssl
 from urllib.parse import unquote, urlsplit
 
 
+def global_endpoint(directory, configuration=None):
+    """Use only the application's global proxy; never fall back to a profile or direct."""
+    from pathlib import Path
+    from urllib.request import getproxies
+    try:
+        cfg = configuration if configuration is not None else json.loads(
+            (Path(directory) / "config.json").read_text(encoding="utf-8"))
+        mode = cfg.get("proxy_mode", "auto")
+        if mode == "direct":
+            raise ValueError()
+        if mode == "auto":
+            proxies = getproxies()
+            address = proxies.get("https") or proxies.get("http") or ""
+            username = password = ""
+        elif mode in ("custom", "http", "https", "socks5", "socks5h"):
+            address = cfg.get("proxy_url") or ""
+            username, password = cfg.get("proxy_user") or "", cfg.get("proxy_pass") or ""
+        else:
+            raise ValueError()
+        if "://" not in address:
+            address = "http://" + address
+        parsed = urlsplit(address)
+        scheme = "socks5h" if parsed.scheme == "socks5" else parsed.scheme
+        from urllib.parse import quote
+        host = parsed.hostname or ""
+        authority = f"[{host}]" if ":" in host else host
+        login = username or unquote(parsed.username or "")
+        secret = password or unquote(parsed.password or "")
+        if parsed.path not in ("", "/") or parsed.query or parsed.fragment:
+            raise ValueError()
+        return ProxyEndpoint.parse(f"{scheme}://{quote(login, safe='')}@{authority}:{parsed.port}", secret)
+    except Exception:
+        raise ProxyUnavailable() from None
+
+
+def effective_profile(profile, directory):
+    """Inject global credentials in memory; never persist them in a profile."""
+    import copy
+    from urllib.parse import quote
+    endpoint = global_endpoint(directory)
+    result = copy.deepcopy(profile)
+    options = result.setdefault("codex", {})
+    host = f"[{endpoint.host}]" if ":" in endpoint.host else endpoint.host
+    options["proxy"] = f"{endpoint.scheme}://{quote(endpoint.username, safe='')}@{host}:{endpoint.port}"
+    options["proxy_password"] = endpoint.password
+    return result
+
+
 class ProxyUnavailable(RuntimeError):
     def __init__(self):
         super().__init__("Прокси недоступен. Запрос Codex заблокирован")

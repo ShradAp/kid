@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { ChevronDown, ShieldCheck, ShieldAlert } from "lucide-react";
 
 interface QuotaWindow {
   bucket: string;
@@ -98,21 +100,28 @@ function resetText(timestamp: number | null) {
 export function CodexQuota({ profileId }: { profileId: string }) {
   const { data, busy, failure, refresh } = useCodexStatus(profileId);
   const windows = data?.limits.windows ?? [];
-  return <div className="flex items-center gap-2 text-xs text-nowrap" aria-live="polite">
-    <span className="flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 font-medium text-foreground/90">Codex · {data?.proxy_state === "blocked" ? "Прокси: заблокировано" : data?.proxy_state === "verified" ? "Прокси: защищённый канал" : "Прокси: не проверен"}</span>
-    {[{ duration: 300, label: "5 ч" }, { duration: 10080, label: "Неделя" }].map(({ duration, label }) => {
-      const matching = windows.filter((item) => item.duration_minutes === duration);
-      return <span key={duration} className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-muted-foreground">
-        {label}: {matching.length ? matching.map((item) =>
-          `${item.bucket}: ${item.remaining_percent === null ? "—" : `${item.remaining_percent}%`} · ${resetText(item.resets_at)}`
-        ).join("; ") : "—"}
-      </span>;
-    })}
-    <span className="text-muted-foreground">
-      {data?.limits.updated_at ? `Обновлено ${new Date(data.limits.updated_at * 1000).toLocaleString("ru-RU")}` : "Успешных обновлений нет"}
-      {(failure || data?.limits.stale) && " · Данные устарели"}
-    </span>
-    <Button size="sm" variant="ghost" className="rounded-full text-muted-foreground hover:bg-white/10 hover:text-foreground" disabled={busy} onClick={() => void refresh("refresh")}>Обновить</Button>
-    {failure && <span className="text-destructive" role="alert">{failure}</span>}
-  </div>;
+  const verified = data?.proxy_state === "verified";
+  const stale = Boolean(failure || data?.limits.stale);
+  const slots = [{ duration: 300, label: "5 ч" }, { duration: 10080, label: "Неделя" }];
+  const percent = (item: QuotaWindow) => item.remaining_percent === null ? "—" : `${item.remaining_percent}%`;
+  return <Popover>
+    <PopoverTrigger render={<Button variant="ghost" size="sm" className="gap-2 rounded-full border border-white/10 bg-white/[0.04] text-xs" />} aria-label="Лимиты и состояние Codex">
+      {verified ? <ShieldCheck className="size-3.5 text-muted-foreground" /> : <ShieldAlert className="size-3.5 text-amber-400" />}
+      <span>Codex</span>
+      {slots.map(({ duration, label }) => <span key={duration} className="text-muted-foreground">{label} {windows.filter(item => item.duration_minutes === duration).map(percent).join(" / ") || "—"}</span>)}
+      {stale && <span className="size-1.5 rounded-full bg-amber-400" aria-label="Данные устарели" />}
+      <ChevronDown className="size-3 text-muted-foreground" />
+    </PopoverTrigger>
+    <PopoverContent align="center" className="w-80 space-y-2 p-4">
+      <p className="font-medium">{verified ? "Прокси: защищённый канал" : data?.proxy_state === "blocked" ? "Запросы Codex заблокированы" : "Прокси ещё не проверен"}</p>
+      {slots.map(({ duration, label }) => <div key={duration} className="space-y-1 text-xs">
+        <p className="font-medium">{label}</p>
+        {windows.filter(item => item.duration_minutes === duration).map((item, index) => <p key={`${item.bucket}-${index}`} className="text-muted-foreground">{item.bucket}: {percent(item)} · {resetText(item.resets_at)}</p>)}
+        {!windows.some(item => item.duration_minutes === duration) && <p className="text-muted-foreground">Нет данных</p>}
+      </div>)}
+      {stale && <p className="text-xs text-muted-foreground">Данные устарели</p>}
+      {failure && <p className="text-xs text-destructive" role="alert">{failure}</p>}
+      <Button size="sm" variant="outline" disabled={busy} onClick={() => void refresh("refresh")}>Обновить лимиты</Button>
+    </PopoverContent>
+  </Popover>;
 }

@@ -1,4 +1,4 @@
-"""Local project inspector and closed Windows actions; no model-supplied shell."""
+"""Local project inspector and confirmed Windows file creation helpers."""
 from __future__ import annotations
 
 import os
@@ -41,7 +41,7 @@ def windows_diagnostic(command):
 
 
 def create_windows_file(root, file_name, content):
-    """Exclusive creation in a verified local directory, without active formats."""
+    """Create a document or UTF-8 source file, without overwriting or executing it."""
     import io
     import re
     import zipfile
@@ -52,8 +52,12 @@ def create_windows_file(root, file_name, content):
             {"CON","PRN","AUX","NUL",*(f"COM{i}" for i in range(10)),*(f"LPT{i}" for i in range(10))}):
         raise ValueError("Требуется обычное имя файла без пути и специальных символов")
     suffix=Path(file_name).suffix.lower()
-    if suffix not in {".txt",".md",".csv",".json",".docx"}:
-        raise ValueError("Допустимы txt, md, csv, json, docx; исполняемые форматы заблокированы")
+    if suffix not in {".txt", ".md", ".csv", ".tsv", ".json", ".docx", ".py", ".pyw",
+                      ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".html", ".css", ".scss",
+                      ".yaml", ".yml", ".toml", ".ini", ".cfg", ".xml", ".sql", ".sh",
+                      ".ps1", ".bat", ".cmd", ".c", ".cpp", ".h", ".hpp", ".cs", ".java",
+                      ".rs", ".go", ".kt", ".swift", ".r", ".ipynb", ".env", ".log"}:
+        raise ValueError("Поддерживаются текстовые документы, DOCX и файлы исходного кода; этот формат не поддерживается")
     if not isinstance(content,str) or len(content.encode("utf-8"))>2*1024*1024:
         raise ValueError("Содержимое превышает 2 МиБ")
     check=CodeWorkspace()

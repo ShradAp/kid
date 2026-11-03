@@ -5,6 +5,7 @@ Importing this module never initializes the application profile or network agent
 """
 import json
 import os
+import re
 from pathlib import Path
 import time
 from urllib.parse import quote, unquote, urljoin, urlsplit, urlunsplit
@@ -63,6 +64,50 @@ class GuestTransportError(Exception):
     pass
 
 
+def regional_block(response):
+    """Recognize explicit regional refusals, without domain-specific rules."""
+    if response.status_code == 451:
+        return True
+    content_type = response.headers.get("Content-Type", "").lower()
+    if content_type and not any(kind in content_type for kind in ("text/", "json", "xml")):
+        return False
+    # Some apps embed machine-readable regional errors in hydration JSON,
+    # far beyond the page headings. Match generic error codes, never domains.
+    if re.search(rb'''["'][a-z0-9_ -]*(?:cross[_ -]border[_ -]block|geo[_ -](?:blocked|restricted))[a-z0-9_ -]*["']''',
+                 response.content, re.I):
+        return True
+    text = response.content[:65536].decode("utf-8", errors="replace")
+    # For long HTML pages inspect headings only: an article quoting an error
+    # should not change the route of an otherwise successful page.
+    if len(text) > 8000 and "html" in content_type:
+        text = " ".join(re.findall(r"<(?:title|h[1-3])\b[^>]*>(.*?)</(?:title|h[1-3])>", text, re.I | re.S))
+    text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", text)).lower().replace("_", " ")
+    return bool(re.search(
+        r"(?:not available|unavailable|not supported|not accessible|access (?:is )?(?:denied|restricted|blocked))"
+        r".{0,60}(?:your|this) (?:country|region|location)|"
+        r"(?:country|region|location).{0,40}(?:not supported|not allowed|blocked)|"
+        r"(?:unsupported|restricted|blocked) (?:country|region|location)|"
+        r"(?:недоступ[а-я]*|доступ.{0,15}(?:ограничен|запрещён|запрещен|заблокирован))"
+        r".{0,60}(?:ваш[а-я]*|данн[а-я]*|эт[а-я]*) (?:стран[а-я]*|регион[а-я]*)|"
+        r"(?:geo[ _-]?(?:blocked|restricted)|regional[ _-]restriction)", text))
+
+
+def browser_challenge(response):
+    """A JS/access interstitial is not a successfully read page."""
+    content_type = response.headers.get("Content-Type", "").lower()
+    if "html" not in content_type and b"<html" not in response.content[:1024].lower():
+        return False
+    text = response.content[:100000].decode("utf-8", errors="replace")
+    text = re.sub(r"<(script|style)\b[^>]*>.*?</\1>", " ", text, flags=re.I | re.S)
+    text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", text)).strip().lower()
+    if len(text) > 1000:
+        return False
+    return bool(re.search(r"checking your browser|verify (?:that )?you are human|"
+                         r"enable javascript|javascript (?:is )?required|just a moment|"
+                         r"access denied|проверка браузера|подтвердите.{0,20}не робот", text)
+                or re.fullmatch(r"please wait[.!…\s]*", text))
+
+
 class GuestSession(requests.Session):
     """A requests-compatible session for adapters and youtube-transcript-api.
 
@@ -104,13 +149,17 @@ class GuestSession(requests.Session):
             raise GuestTransportError("account_credentials_forbidden")
         if self.strict_proxy and not self.proxy_url:
             raise GuestTransportError("proxy_required")
-        routes = [("proxy", self.proxy_url)] if self.strict_proxy else ([("proxy", self.proxy_url), ("direct", "")] if self.proxy_url else [("direct", "")])
+        routes = [("proxy", self.proxy_url)] if self.strict_proxy else [("direct", "")]
+        # Only safe reads may be repeated; never replay a form submission.
+        if not self.strict_proxy and self.proxy_url and method.upper() in ("GET", "HEAD"):
+            routes.append(("proxy", self.proxy_url))
         for route, proxy in routes:
+            can_fallback = route == "direct" and len(routes) > 1
             target = url
             for _ in range(4):
                 self._check(target)
                 remaining = self.deadline - time.monotonic()
-                # Reserve time for a direct attempt if the proxy is broken.
+                # Keep the shared deadline bounded and leave time for fallback.
                 connect_timeout = min(3, max(.05, remaining / 2))
                 read_timeout = min(5, max(.05, remaining / 2))
                 # Start with no supplied account cookies. Keep only anonymous
@@ -130,7 +179,8 @@ class GuestSession(requests.Session):
                         target = urljoin(target, response.headers.get("Location", ""))
                         response.close()
                         continue
-                    if response.status_code in (403, 407, 429, 500, 502, 503, 504) and route == "proxy":
+                    if response.status_code in (403, 408, 451, 500, 502, 503, 504) and can_fallback:
+                        self.attempts[-1]["reason"] = "http_refusal"
                         response.close()
                         break
                     raw = bytearray()
@@ -146,6 +196,13 @@ class GuestSession(requests.Session):
                     response._content = bytes(raw)
                     response._content_consumed = True
                     response.encoding = "utf-8"
+                    refusal = "regional_block" if regional_block(response) else "browser_challenge" if browser_challenge(response) else ""
+                    if refusal:
+                        self.attempts[-1]["reason"] = refusal
+                        if can_fallback:
+                            break
+                        raise GuestTransportError(refusal)
+                    response.kid_route = route
                     return response
                 except GuestTransportError:
                     if response is not None:

@@ -10,6 +10,7 @@ import {
   FileText,
   Wrench,
   ChevronDown,
+  Send,
 } from "lucide-react";
 import {
   Dialog,
@@ -37,6 +38,7 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { setFileClickMode } from "@/lib/file-actions";
+import { TelegramSettings } from "@/components/dialogs/telegram-settings";
 
 const FONT_SIZE_LABELS = ["Small", "Medium", "Large", "Extra Large"];
 
@@ -405,7 +407,7 @@ export function SettingsModal({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="border-white/10 bg-popover sm:max-w-md">
+      <DialogContent className="max-h-[90vh] overflow-y-auto border-white/10 bg-popover sm:max-w-md">
         <DialogHeader>
           <DialogTitle>Settings</DialogTitle>
           <DialogDescription>
@@ -414,6 +416,10 @@ export function SettingsModal({
         </DialogHeader>
 
         <div className="flex flex-col gap-2">
+          <SettingsSection id="telegram" title="Telegram" icon={<Send className="size-4 text-muted-foreground" />}
+            open={openSection === "telegram"} onToggle={setOpenSection}>
+            {openSection === "telegram" && open && <TelegramSettings />}
+          </SettingsSection>
           <SettingsSection
             id="backup"
             title="Резервные копии"
@@ -530,10 +536,10 @@ export function SettingsModal({
                   Режим прокси
                 </FieldLabel>
                 <FieldDescription>
-                  Прокси используется веб-инструментами (чтение страниц, поиск) только
-                  если он реально работает — адрес проверяется тестовым запросом.
-                  «Авто» подхватит прокси из настроек Windows; нерабочий адрес
-                  отбрасывается в пользу прямого доступа.
+                  Общий прокси используется Codex и веб-инструментами.
+                  Для Codex прямой маршрут всегда запрещён: при сбое прокси запрос блокируется.
+                  «Авто» использует настройки Windows. Гостевое чтение страниц сначала
+                  идёт напрямую; при сетевой ошибке или блокировке — через настроенный прокси.
                 </FieldDescription>
                 <Select
                   value={proxyMode}

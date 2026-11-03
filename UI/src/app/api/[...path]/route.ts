@@ -22,7 +22,7 @@ async function proxy(request: NextRequest) {
   const token = process.env.KID_BRIDGE_TOKEN;
   if (!token) return Response.json({ error: "Start the application using its Python launcher" }, { status: 503 });
   const url = new URL(request.url);
-  if (!/^\/api\/(?:[A-Za-z0-9_-]+\/?)+$/.test(url.pathname)) {
+  if (!/^\/api\/(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)?\/?$/.test(url.pathname)) {
     return Response.json({ error: "Invalid API path" }, { status: 400 });
   }
   const limit = url.pathname === "/api/upload" ? MAX_UPLOAD_BYTES : MAX_JSON_BYTES;

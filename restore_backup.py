@@ -83,7 +83,7 @@ def main() -> int:
                 raise SystemExit("Небезопасный путь данных в архиве")
             if not relative.parts or relative.parts[0] not in {
                 "notes.json", "retrieval_metrics.json", ".env", "data",
-                "generated_files", "presets", "studio_history", "history", "documents", "notes",
+                "generated_files", "presets", "studio_history", "history", "documents", "notes", "telegram.json", "telegram",
             }:
                 raise SystemExit("Неизвестный каталог данных в архиве")
             target = (cm.CONFIG_DIR / Path(*relative.parts)).resolve()

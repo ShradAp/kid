@@ -3,6 +3,7 @@
 import { useEffect, useRef, type ChangeEvent, type KeyboardEvent, type ClipboardEvent } from "react";
 import { Plus, Trash2, Square, X, Paperclip } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { VoiceControl } from "@/components/chat/voice-control";
 import {
   Tooltip,
   TooltipContent,
@@ -30,6 +31,8 @@ export interface Attachment {
 }
 
 export function InputDeck({
+  sessionId,
+  onVoiceText,
   value,
   onChange,
   onSend,
@@ -40,6 +43,8 @@ export function InputDeck({
   onAttachMany,
   onRemoveAttachment,
 }: {
+  sessionId?: string;
+  onVoiceText?: (text: string) => void;
   value: string;
   onChange: (value: string) => void;
   onSend: () => void;
@@ -197,7 +202,7 @@ export function InputDeck({
           </div>
         )}
 
-        <div className="flex items-end gap-1.5 rounded-3xl border border-white/10 bg-card/95 p-2 shadow-2xl shadow-black/40 backdrop-blur-md">
+        <div className="flex items-center gap-1.5 rounded-3xl border border-white/10 bg-card/95 p-2 shadow-2xl shadow-black/40 backdrop-blur-md">
           <input
             ref={fileInputRef}
             type="file"
@@ -233,6 +238,10 @@ export function InputDeck({
             placeholder="Message your assistant..."
             className="max-h-40 min-h-9 flex-1 resize-none bg-transparent px-1 py-1.5 text-[15px] text-foreground placeholder:text-muted-foreground focus:outline-none"
           />
+
+          {sessionId && onVoiceText && (
+            <VoiceControl key={sessionId} sessionId={sessionId} onText={onVoiceText} />
+          )}
 
           {isGenerating && (
             <Button

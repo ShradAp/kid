@@ -1,4 +1,4 @@
-"""Prepare the native prototype through the profile proxy, without launching it.
+"""Prepare the native runtime through the global proxy, without launching it.
 
 --describe is offline/read-only. --install-protection is an explicit elevated
 OS-policy mutation; never call it automatically during normal app startup.

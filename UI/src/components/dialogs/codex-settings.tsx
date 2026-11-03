@@ -2,36 +2,20 @@
 
 import type { CodexSettings as Settings } from "@/lib/assistant-data";
 import { useCodexStatus } from "@/components/widgets/codex-status";
-import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { SecretInput } from "@/components/ui/secret-input";
 import { Switch } from "@/components/ui/switch";
 import { Field, FieldLabel, FieldDescription, FieldGroup } from "@/components/ui/field";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 export const defaultCodexSettings: Settings = {
-  model: "", effort: "", search: "codex", proxy: "", workspace: "",
+  model: "", effort: "", search: "codex", workspace: "",
 };
-
-function proxyFields(value: string) {
-  const match = /^(https?|socks5h):\/\/(?:([^@]*)@)?(\[[^\]]*\]|[^:]*)(?::(.*))?$/.exec(value);
-  if (!match) return { protocol: "http", address: value, port: "", login: "" };
-  let login = match[2] ?? "";
-  try { login = decodeURIComponent(login); } catch { /* Keep an incomplete edit. */ }
-  return { protocol: match[1], address: match[3].replace(/^\[|\]$/g, ""), port: match[4] ?? "", login };
-}
 
 export function CodexSettings({ profileId, value, onChange }: {
   profileId: string; value: Settings; onChange: (value: Settings) => void;
 }) {
   const { data, busy, failure, refresh } = useCodexStatus(profileId);
   const model = data?.models.find((item) => item.model === value.model);
-  const proxy = proxyFields(value.proxy);
-  function updateProxy(update: Partial<typeof proxy>) {
-    const next = { ...proxy, ...update };
-    const address = next.address.includes(":") && !next.address.startsWith("[") ? `[${next.address}]` : next.address;
-    onChange({ ...value, proxy: `${next.protocol}://${next.login ? `${encodeURIComponent(next.login)}@` : ""}${address}${next.port ? `:${next.port}` : ""}` });
-  }
   return <FieldGroup>
     <div role="status" className="space-y-3 rounded-xl border border-white/10 bg-white/[0.02] p-3.5 text-sm">
       <p>{data?.error || (data?.proxy_state === "verified" ? "Защищённый канал Codex подключён" : "Подключите Codex через проверку изоляции и прокси")}</p>
@@ -59,40 +43,7 @@ export function CodexSettings({ profileId, value, onChange }: {
       </div>
       <FieldDescription>Команды PowerShell и CMD выполняются на вашем компьютере. При включении они запускаются без подтверждения и могут менять файлы. Прокси защищает соединения самого Codex; команды используют обычную сеть Windows.</FieldDescription>
     </Field>
-    <Field>
-      <FieldLabel htmlFor="codex-proxy-protocol">Тип прокси</FieldLabel>
-      <Select value={proxy.protocol} onValueChange={(protocol) => { if (protocol) updateProxy({ protocol }); }}>
-        <SelectTrigger id="codex-proxy-protocol" className="w-full"><SelectValue /></SelectTrigger>
-        <SelectContent>
-          <SelectItem value="http">HTTP</SelectItem>
-          <SelectItem value="https">HTTPS</SelectItem>
-          <SelectItem value="socks5h">SOCKS5</SelectItem>
-        </SelectContent>
-      </Select>
-    </Field>
-    <div className="grid grid-cols-[minmax(0,1fr)_6rem] gap-3">
-      <Field className="min-w-0">
-        <FieldLabel htmlFor="codex-proxy-address">Адрес прокси</FieldLabel>
-        <Input id="codex-proxy-address" value={proxy.address} autoComplete="off" spellCheck={false} placeholder="127.0.0.1" onChange={(event) => updateProxy({ address: event.target.value.trim() })} />
-      </Field>
-      <Field>
-        <FieldLabel htmlFor="codex-proxy-port">Порт</FieldLabel>
-        <Input id="codex-proxy-port" value={proxy.port} inputMode="numeric" autoComplete="off" placeholder="8080" onChange={(event) => updateProxy({ port: event.target.value.replace(/\D/g, "") })} />
-      </Field>
-    </div>
-    <Field>
-      <FieldLabel htmlFor="codex-proxy-login">Логин прокси</FieldLabel>
-      <Input id="codex-proxy-login" value={proxy.login} autoComplete="off" spellCheck={false} placeholder="Логин" onChange={(event) => updateProxy({ login: event.target.value })} />
-    </Field>
-    <Field>
-      <FieldLabel htmlFor="codex-proxy-password">Пароль прокси</FieldLabel>
-      <SecretInput key={profileId} id="codex-proxy-password" label="Пароль прокси" cleared={value.clear_proxy_password}
-        value={value.proxy_password ?? ""} saved={value.has_proxy_password && !value.clear_proxy_password}
-        reveal={{field:"codex_proxy_password", profile_id:profileId}}
-        onChange={(password) => onChange({ ...value, proxy_password:password, clear_proxy_password:false })} />
-      <Button type="button" variant="ghost" size="sm" onClick={() => onChange({ ...value, proxy_password:"", clear_proxy_password:true })}>Удалить пароль при сохранении</Button>
-      <FieldDescription>Укажите числовой IP и порт прокси. Сохраните профиль перед подключением. Прямой маршрут запрещён.</FieldDescription>
-    </Field>
+    <FieldDescription>Прокси берётся из общих настроек приложения. Без рабочего прокси запросы Codex блокируются.</FieldDescription>
     <Field>
       <FieldLabel htmlFor="codex-model">Модель Codex</FieldLabel>
       <Select value={value.model} disabled={!data?.models.length} onValueChange={(model) => { if (model !== null) onChange({ ...value, model, effort: "" }); }}>

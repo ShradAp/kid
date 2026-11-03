@@ -32,17 +32,9 @@ from docx.table import Table
 from docx.text.paragraph import Paragraph
 
 try:  # импорт внутри пакета
-    from .docx_engine import (
-        ALIGNMENT_MAP,
-        LINE_RULE_MAP,
-        _TBLPR_TAG_SEQ,
-        _insert_in_order,
-        _classify_document_sections,
-        DocxFormatter,
-        apply_paragraph_format,
-        element_has_media,
-        set_run_font,
-    )
+    from .document_formatting import (ALIGNMENT_MAP, LINE_RULE_MAP, _TBLPR_TAG_SEQ, _insert_in_order, apply_paragraph_format, element_has_media, set_run_font)
+    from .document_sections import (_classify_document_sections)
+    from .docx_engine import (DocxFormatter)
     from .docx_extractor import _classify_paragraph
     from .preset_schema import (
         Alignment,
@@ -55,17 +47,9 @@ try:  # импорт внутри пакета
         resolve_preset,
     )
 except ImportError:  # pragma: no cover - запуск модуля вне пакета
-    from docx_engine import (  # type: ignore[no-redef]
-        ALIGNMENT_MAP,
-        LINE_RULE_MAP,
-        _TBLPR_TAG_SEQ,
-        _insert_in_order,
-        _classify_document_sections,
-        DocxFormatter,
-        apply_paragraph_format,
-        element_has_media,
-        set_run_font,
-    )
+    from document_formatting import (ALIGNMENT_MAP, LINE_RULE_MAP, _TBLPR_TAG_SEQ, _insert_in_order, apply_paragraph_format, element_has_media, set_run_font)
+    from document_sections import (_classify_document_sections)
+    from docx_engine import (DocxFormatter)
     from docx_extractor import _classify_paragraph  # type: ignore[no-redef]
     from preset_schema import (  # type: ignore[no-redef]
         Alignment,

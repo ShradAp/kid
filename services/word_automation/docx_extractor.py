@@ -62,25 +62,9 @@ try:  # импорт внутри пакета
         default_gost_preset,
     )
     try:  # общие хелперы распознавания секций живут в движке
-        from .docx_engine import (
-            _classify_document_sections,
-            _footer_start_index,
-            _matches_any,
-            _paragraph_has_underline,
-            _section_heading_level,
-            _structural_titles,
-            _upper_ratio,
-        )
+        from .document_sections import (_classify_document_sections, _footer_start_index, _matches_any, _paragraph_has_underline, _section_heading_level, _structural_titles, _upper_ratio)
     except ImportError:  # pragma: no cover
-        from docx_engine import (  # type: ignore[no-redef]
-            _classify_document_sections,
-            _footer_start_index,
-            _matches_any,
-            _paragraph_has_underline,
-            _section_heading_level,
-            _structural_titles,
-            _upper_ratio,
-        )
+        from document_sections import (_classify_document_sections, _footer_start_index, _matches_any, _paragraph_has_underline, _section_heading_level, _structural_titles, _upper_ratio)
 except ImportError:  # pragma: no cover - запуск модуля вне пакета
     from preset_schema import (  # type: ignore[no-redef]
         Alignment,
@@ -103,15 +87,7 @@ except ImportError:  # pragma: no cover - запуск модуля вне па�
         _log,
         default_gost_preset,
     )
-    from docx_engine import (  # type: ignore[no-redef]
-        _classify_document_sections,
-        _footer_start_index,
-        _matches_any,
-        _paragraph_has_underline,
-        _section_heading_level,
-        _structural_titles,
-        _upper_ratio,
-    )
+    from document_sections import (_classify_document_sections, _footer_start_index, _matches_any, _paragraph_has_underline, _section_heading_level, _structural_titles, _upper_ratio)
 
 
 # --------------------------------------------------------------------------------------

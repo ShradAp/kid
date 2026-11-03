@@ -20,13 +20,11 @@ FastEmbed/ONNX недоступны, модуль переключается н�
 from __future__ import annotations
 
 import json
-import math
 import os
 import re
 import sys
 import threading
 import uuid
-import zlib
 from datetime import datetime
 from pathlib import Path
 
@@ -59,12 +57,12 @@ DATA_DIR = USER_DATA_DIR / "data"
 LANCEDB_DIR = DATA_DIR / "lancedb"
 META_PATH = DATA_DIR / "user_profile_meta.json"
 
-TABLE_NAME = "user_facts"
+from .json_backend import TABLE_NAME, _cosine, _JsonQuery, _JsonArrow, _JsonTable
 # Запасное хранилище (если lancedb не установлен в текущем интерпретаторе):
 # JSON в каталоге данных пользователя с теми же полями, что и в LanceDB.
 JSON_TABLE_FILE = "user_facts.json"
 EMBED_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-VECTOR_DIM = 384
+from .embeddings import VECTOR_DIM, _HashEmbedder, _model_cache_dir, load_fastembed
 
 FACT_CATEGORIES = (
     "tech_stack",
@@ -113,18 +111,6 @@ def _normalize_category(value: object) -> str:
     return raw if raw in FACT_CATEGORIES else DEFAULT_CATEGORY
 
 
-def _model_cache_dir() -> str:
-    """Кэш ONNX-модели: вне OneDrive-папки проекта, чтобы не синхронизировать сотни МБ."""
-    override = os.environ.get("KID_EMBED_CACHE")
-    if override:
-        return override
-    if os.name == "nt":
-        root = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or str(Path.home())
-    else:
-        root = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
-    return str(Path(root) / "kid" / "fastembed")
-
-
 def _where_id(fact_id: str) -> str:
     """SQL-условие для LanceDB; одинарные кавычки экранируем на случай мусора."""
     safe = str(fact_id).replace("'", "''")
@@ -155,203 +141,14 @@ def _friendly_error(exc: Exception) -> str:
     return f"{type(exc).__name__}: {exc}"
 
 
-def _cosine(left: list[float], right: list[float]) -> float:
-    """Косинусная близость двух векторов (0.0 при вырожденных векторах)."""
-    if not left or not right or len(left) != len(right):
-        return 0.0
-    dot = 0.0
-    norm_a = 0.0
-    norm_b = 0.0
-    for value_a, value_b in zip(left, right):
-        dot += value_a * value_b
-        norm_a += value_a * value_a
-        norm_b += value_b * value_b
-    if norm_a <= 0.0 or norm_b <= 0.0:
-        return 0.0
-    return dot / math.sqrt(norm_a * norm_b)
-
-
 # ---------------------------------------------------------------------------
 #                       запасной локальный эмбеддер
 # ---------------------------------------------------------------------------
 
 
-class _HashEmbedder:
-    """Детерминированный эмбеддер «мешок слов + основы» без единой зависимости.
-
-    Используется, только если FastEmbed не поднялся (нет onnxruntime, не скачалась
-    модель, битый кэш). Даёт устойчивый лексический поиск: полностью локальный,
-    одинаковый между запусками процесса и между перезапусками приложения.
-    """
-
-    name = "hash"
-
-    def __init__(self, dim: int = VECTOR_DIM) -> None:
-        self.dim = int(dim)
-        self._token_re = re.compile(r"[0-9a-zа-яё]+")
-
-    def _features(self, text: object) -> list[str]:
-        tokens = self._token_re.findall(str(text if text is not None else "").lower())
-        features: list[str] = []
-        for token in tokens:
-            features.append(token)
-            if len(token) > 4:
-                # основа слова: «python» и «python-разработчик» попадают в один бакет
-                features.append(token[:4])
-        return features
-
-    def embed_one(self, text: object) -> list[float]:
-        vector = [0.0] * self.dim
-        for feature in self._features(text):
-            # crc32, а не hash(): встроенный hash для str солится между запусками
-            digest = zlib.crc32(feature.encode("utf-8"))
-            index = digest % self.dim
-            vector[index] += 1.0 if (digest >> 16) & 1 else -1.0
-        norm = math.sqrt(sum(value * value for value in vector))
-        if norm > 0:
-            vector = [value / norm for value in vector]
-        return vector
-
-    def embed(self, texts) -> list[list[float]]:
-        return [self.embed_one(text) for text in texts]
-
-
 # ---------------------------------------------------------------------------
 #              запасное хранилище фактов (JSON вместо LanceDB)
 # ---------------------------------------------------------------------------
-
-
-class _JsonQuery:
-    """Аналог ``table.search(vector).metric(...).limit(...).to_list()``."""
-
-    def __init__(self, rows: list[dict], vector: list[float]) -> None:
-        self._rows = rows
-        self._vector = [float(value) for value in (vector or [])]
-        self._limit = 10
-
-    def metric(self, _name: object) -> "_JsonQuery":
-        # всегда косинусная мера — как в основном коде работы с LanceDB
-        return self
-
-    def limit(self, count: object) -> "_JsonQuery":
-        try:
-            self._limit = max(1, int(count))
-        except Exception:
-            pass
-        return self
-
-    def to_list(self) -> list[dict]:
-        scored: list[tuple[float, dict]] = []
-        for row in self._rows:
-            distance = 1.0 - _cosine(self._vector, row.get("vector") or [])
-            scored.append((distance, dict(row)))
-        scored.sort(key=lambda pair: pair[0])
-        found: list[dict] = []
-        for distance, row in scored[: self._limit]:
-            row["_distance"] = distance
-            found.append(row)
-        return found
-
-
-class _JsonArrow:
-    """Аналог ``table.to_arrow()``: только ``to_pylist()``, как в ``all_facts``."""
-
-    def __init__(self, rows: list[dict]) -> None:
-        self._rows = rows
-
-    def to_pylist(self) -> list[dict]:
-        return [dict(row) for row in self._rows]
-
-
-class _JsonTable:
-    """Запасная таблица фактов в JSON-файле (без единой внешней зависимости).
-
-    Повторяет узкий интерфейс таблицы LanceDB, который использует
-    ``UserProfileMemory`` (``count_rows``/``add``/``delete``/``update``/
-    ``search``/``to_arrow``), поэтому код записи и поиска остаётся общим.
-    Включается автоматически, если ``lancedb``/``pyarrow`` не установлены в
-    текущем интерпретаторе: память профиля продолжает работать, а факты
-    переезжают в LanceDB, как только он появляется (``_migrate_json_rows``).
-    """
-
-    def __init__(self, path: str | os.PathLike[str]) -> None:
-        self.path = Path(path)
-        self._rows: list[dict] = []
-        self._lock = threading.RLock()
-        self._load()
-
-    # ------------------------------------------------------------- служебное
-
-    def _load(self) -> None:
-        try:
-            if self.path.exists():
-                data = json.loads(self.path.read_text(encoding="utf-8"))
-                rows = data.get("rows") if isinstance(data, dict) else data
-                if isinstance(rows, list):
-                    self._rows = [dict(row) for row in rows if isinstance(row, dict)]
-        except Exception:
-            self._rows = []
-
-    def _flush(self) -> None:
-        payload = {"schema_version": 1, "table": TABLE_NAME, "rows": self._rows}
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-        os.replace(tmp, self.path)
-
-    @staticmethod
-    def _match_ids(where: object) -> set:
-        match = re.search(r"id\s*=\s*'(.*)'\s*$", str(where if where is not None else ""), re.DOTALL)
-        if not match:
-            return set()
-        return {match.group(1).replace("''", "'")}
-
-    # --------------------------------------------------- интерфейс «таблицы»
-
-    def count_rows(self) -> int:
-        with self._lock:
-            return len(self._rows)
-
-    def add(self, rows) -> None:
-        with self._lock:
-            for row in rows or []:
-                if not isinstance(row, dict):
-                    continue
-                item = dict(row)
-                item["vector"] = [float(value) for value in (item.get("vector") or [])]
-                self._rows.append(item)
-            self._flush()
-
-    def delete(self, where: object) -> None:
-        ids = self._match_ids(where)
-        with self._lock:
-            self._rows = [row for row in self._rows if str(row.get("id")) not in ids]
-            self._flush()
-
-    def update(self, where: object, values: dict) -> None:
-        ids = self._match_ids(where)
-        with self._lock:
-            for row in self._rows:
-                if str(row.get("id")) not in ids:
-                    continue
-                for key, value in (values or {}).items():
-                    row[key] = (
-                        [float(item) for item in value] if key == "vector" else value
-                    )
-            self._flush()
-
-    def search(self, vector) -> _JsonQuery:
-        with self._lock:
-            return _JsonQuery([dict(row) for row in self._rows], list(vector or []))
-
-    def to_arrow(self) -> _JsonArrow:
-        with self._lock:
-            return _JsonArrow([dict(row) for row in self._rows])
-
-    def reset(self) -> None:
-        with self._lock:
-            self._rows = []
-            self._flush()
 
 
 # ---------------------------------------------------------------------------
@@ -415,15 +212,7 @@ class UserProfileMemory:
         forced = os.environ.get("KID_MEMORY_EMBEDDER", "").strip().lower()
         if forced != "hash":
             try:
-                from fastembed import TextEmbedding
-
-                cache_dir = _model_cache_dir()
-                Path(cache_dir).mkdir(parents=True, exist_ok=True)
-                model = TextEmbedding(model_name=self.model_name, cache_dir=cache_dir)
-                # Контрольный прогон: без него «успешная» инициализация может
-                # оказаться отложенной загрузкой, которая упадёт уже в чате.
-                probe = list(model.embed(["проверка локальной памяти"]))
-                dim = len(probe[0]) if probe else VECTOR_DIM
+                model, dim, cache_dir = load_fastembed(self.model_name)
                 self._embedder = model
                 self.backend = "fastembed"
                 self.dim = int(dim)
@@ -994,7 +783,7 @@ def manage_memory(
 ) -> dict:
     """Единый обработчик инструмента ``manage_memory`` (list/update/delete/clear).
 
-    Даёт модели читать и менять долговременную память профиля ТОЛЬКО по явному
+    Чтение доступно по необходимости; изменение и удаление — по явному
     запросу пользователя. Возвращает ``{"ok", "status", "message", ...}``.
     """
     act = str(action if action is not None else "").strip().lower()

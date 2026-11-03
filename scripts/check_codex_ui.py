@@ -124,17 +124,21 @@ def main():
                                 "models": [{"id": "ui-model", "model": "ui-model", "displayName": "UI test model", "supportedReasoningEfforts": [{"reasoningEffort": "high"}]}],
                             }))
                             return
-                        headers = {"X-Kid-Token": app.BRIDGE_TOKEN}
+                        # Image requests must exercise the real Next.js proxy:
+                        # forwarding directly to the bridge hid rejected .png paths.
+                        is_generated_image = url.path.startswith("/api/codex-images/")
+                        headers = ({"Host": "127.0.0.1:3000"} if is_generated_image
+                                   else {"X-Kid-Token": app.BRIDGE_TOKEN})
                         if route.request.headers.get("content-type"):
                             headers["Content-Type"] = route.request.headers["content-type"]
                         # stdlib avoids Playwright embedding the private bridge
                         # header in exception call logs during browser shutdown.
-                        connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+                        connection = http.client.HTTPConnection("127.0.0.1", frontend_port if is_generated_image else server.server_port, timeout=5)
                         try:
                             connection.request(route.request.method, url.path + ("?" + url.query if url.query else ""),
                                                body=route.request.post_data_buffer, headers=headers)
                             response = connection.getresponse()
-                            route.fulfill(status=response.status, content_type="application/json", body=response.read())
+                            route.fulfill(status=response.status, content_type=response.getheader("Content-Type", "application/json"), body=response.read())
                         finally:
                             connection.close()
                     context.route("**/*", local_route)
@@ -151,7 +155,11 @@ def main():
                     page.on("requestfailed", lambda request: responses.append((request.failure, request.url)))
                     page.goto(origin)
                     try:
-                        expect(page.get_by_text("Прокси: заблокировано", exact=False)).to_be_visible(timeout=15000)
+                        quota_button = page.get_by_role("button", name="Лимиты и состояние Codex", exact=True, include_hidden=True)
+                        expect(quota_button).to_be_visible(timeout=15000)
+                        quota_button.click()
+                        expect(page.get_by_text("Запросы Codex заблокированы", exact=True)).to_be_visible()
+                        page.keyboard.press("Escape")
                     except AssertionError:
                         print("Browser page errors:", errors)
                         print("Browser responses:", responses)
@@ -213,13 +221,10 @@ def main():
                     page.set_viewport_size({"width":1440,"height":1000})
                     page.get_by_role("button", name="Настройки профиля Codex test").click()
                     expect(page.get_by_label("Движок", exact=True)).to_contain_text("Codex")
-                    expect(page.get_by_label("Адрес прокси", exact=True)).to_have_value("127.0.0.1")
-                    expect(page.get_by_label("Порт", exact=True)).to_have_value("1")
+                    expect(page.locator("#codex-proxy-address, #codex-proxy-port, #codex-proxy-password")).to_have_count(0)
                     page.get_by_role("button", name="Лавандовый", exact=True).click()
                     page.get_by_role("switch", name="Автоматически разрешать команды", exact=True).check()
                     expect(page.get_by_role("button", name="Лавандовый", exact=True)).to_have_attribute("aria-pressed", "true")
-                    page.get_by_label("Порт", exact=True).fill("1234")
-                    page.get_by_label("Логин прокси", exact=True).fill("ui:user@example")
                     expect(page.get_by_role("button", name="Войти в ChatGPT")).to_be_disabled()
                     page.get_by_label("Поисковый движок", exact=True).click()
                     expect(page.get_by_role("option", name="Поиск kid", exact=True)).to_be_visible()
@@ -230,40 +235,22 @@ def main():
                     capture("codex-settings-mobile")
                     assert page.locator('[data-slot="dialog-content"]').evaluate("e => e.scrollWidth <= e.clientWidth + 1"), "Settings overflow on mobile"
                     page.set_viewport_size({"width": 1440, "height": 1000})
-                    page.get_by_label("Пароль прокси", exact=True).fill("ui-test-secret")
-                    expect(page.get_by_label("Пароль прокси", exact=True)).to_have_attribute("type", "password")
-                    page.get_by_role("button", name="Показать пароль прокси", exact=True).click()
-                    expect(page.get_by_label("Пароль прокси", exact=True)).to_have_attribute("type", "text")
-                    expect(page.get_by_label("Пароль прокси", exact=True)).to_have_value("ui-test-secret")
-                    page.get_by_role("button", name="Скрыть пароль прокси", exact=True).click()
-                    expect(page.get_by_label("Пароль прокси", exact=True)).to_have_attribute("type", "password")
                     page.get_by_role("button", name="Save changes", exact=True).click()
                     expect(page.get_by_text("Profile updated", exact=True)).to_be_visible()
-                    assert app.load_config()["profiles"]["main"]["codex"]["proxy_password"] == "ui-test-secret"
                     assert app.load_config()["profiles"]["main"]["color"] == "lavender"
                     assert app.load_config()["profiles"]["main"]["codex"]["auto_approve_commands"] is True
-                    assert app.load_config()["profiles"]["main"]["codex"]["proxy"] == "http://ui%3Auser%40example@127.0.0.1:1234"
                     before_reload_saves = len(note_saves)
                     fail_notes_read[0] = True
                     page.reload()
                     page.get_by_role("button", name="Open menu", exact=True).click()
                     page.get_by_role("button", name="Настройки профиля Codex test").click()
-                    expect(page.get_by_label("Пароль прокси", exact=True)).to_have_value("")
-                    expect(page.get_by_label("Пароль прокси", exact=True)).to_have_attribute("placeholder", "********")
                     expect(page.get_by_role("button", name="Лавандовый", exact=True)).to_have_attribute("aria-pressed", "true")
-                    page.get_by_role("button", name="Показать пароль прокси", exact=True).click()
-                    expect(page.get_by_label("Пароль прокси", exact=True)).to_have_value("ui-test-secret")
-                    page.get_by_role("button", name="Скрыть пароль прокси", exact=True).click()
-                    expect(page.get_by_label("Пароль прокси", exact=True)).to_have_value("")
                     page.get_by_label("Движок", exact=True).click()
                     page.get_by_role("option", name="API — OpenAI-совместимый", exact=True).click()
                     expect(page.get_by_label("Base URL", exact=True)).to_be_visible()
                     preview_codex_controls[0] = True
                     page.get_by_label("Движок", exact=True).click()
                     page.get_by_role("option", name="Codex — изолированный App Server", exact=True).click()
-                    expect(page.get_by_label("Адрес прокси", exact=True)).to_have_value("127.0.0.1")
-                    expect(page.get_by_label("Порт", exact=True)).to_have_value("1234")
-                    expect(page.get_by_label("Логин прокси", exact=True)).to_have_value("ui:user@example")
                     expect(page.get_by_text("TEST-CODE", exact=True)).to_be_visible()
                     page.get_by_label("Модель Codex", exact=True).click()
                     page.get_by_role("option", name="UI test model", exact=True).click()
@@ -275,7 +262,8 @@ def main():
                     assert page.locator('[data-slot="dialog-content"]').evaluate("e => e.scrollWidth <= e.clientWidth + 1")
                     capture("codex-controls-mobile")
                     quota_percent[0] = 65
-                    expect(page.get_by_text("codex: 65%", exact=False)).to_be_visible(timeout=12000)
+                    expect(quota_button).to_contain_text("5 ч 65%", timeout=12000)
+                    assert "Обновлено" not in quota_button.text_content()
                     assert "/api/codex/limits" in api_requests, "Quota must update automatically from the local cache"
                     assert len(note_saves) == before_reload_saves, "Cached notes after failed GET must not overwrite the server"
                     assert len(app.load_notes()) == 2
@@ -288,16 +276,45 @@ def main():
                     preview_chat[0] = True
                     page.get_by_role("button", name="Cancel", exact=True).click()
                     page.set_viewport_size({"width":1440,"height":1000})
+                    # Simulate a real clipboard image rather than merely setting
+                    # attachment state. The production upload endpoint is used.
+                    draft.evaluate("""async element => {
+                      const canvas = document.createElement('canvas');
+                      canvas.width = 16; canvas.height = 16;
+                      const ctx = canvas.getContext('2d'); ctx.fillStyle = 'blue'; ctx.fillRect(0, 0, 16, 16);
+                      const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+                      const transfer = new DataTransfer();
+                      transfer.items.add(new File([blob], 'clipboard.png', {type:'image/png'}));
+                      element.dispatchEvent(new ClipboardEvent('paste', {clipboardData:transfer, bubbles:true, cancelable:true}));
+                    }""")
+                    expect(page.locator('img[alt="clipboard.png"]')).to_be_visible()
+                    for name in ("Attach file", "Clear chat"):
+                        bounds = page.get_by_role("button", name=name, exact=True).bounding_box()
+                        text_bounds = draft.bounding_box()
+                        assert abs(bounds["y"] + bounds["height"]/2 - text_bounds["y"] - text_bounds["height"]/2) < 1
                     draft.fill("Тест интерфейса ленты действий")
                     draft.press("Enter")
                     expect(page.get_by_text("Выполняется работа", exact=False)).to_be_visible(timeout=10000)
                     expect(page.get_by_text("Проверяю файлы проекта", exact=True)).to_be_visible(timeout=10000)
                     capture("codex-activity-live")
                     assert pending_chat[0] is not None
+                    uploaded = json.loads(pending_chat[0].request.post_data)["attachments"]
+                    assert len(uploaded) == 1 and uploaded[0].get("file_id"), "Clipboard image must reach the chat request"
+                    items, persisted_attachments = __import__("codex_attachments").prepare_attachments(uploaded, app.FILE_ACCESS, {})
+                    assert items[0]["type"] == "localImage"
+                    from codex_images import collect_images
+                    import base64
+                    generated_images = collect_images(directory, {"type":"imageGeneration", "status":"completed",
+                        "result":base64.b64encode(Path(items[0]["path"]).read_bytes()).decode()})
+                    assert len(generated_images) == 1
                     pending_chat[0].fulfill(status=200, content_type="application/json", body=json.dumps({
                         "reply":"Проверка завершена. Все тесты прошли.","thinking":activity_steps,
-                        "activity":{"duration_ms":97000,"status":"completed"}}))
+                        "activity":{"duration_ms":97000,"status":"completed"}, "images":generated_images}))
                     expect(page.get_by_text("Проверка завершена. Все тесты прошли.", exact=True)).to_be_visible()
+                    generated = page.get_by_role("img", name=generated_images[0]["name"], exact=True)
+                    expect(generated).to_be_visible()
+                    expect(generated).to_have_js_property("naturalWidth", 16)
+                    expect(page.get_by_role("link", name="Скачать изображение")).to_have_count(0)
                     expect(page.get_by_text("Проверяю файлы проекта", exact=True)).not_to_be_visible()
                     capture("codex-activity-completed")
                     page.get_by_text("Работа завершена", exact=False).click()
@@ -305,13 +322,16 @@ def main():
                     # Persist the fixture exactly as a real Codex response and
                     # reload through /api/init: presentation must survive restart.
                     chat_id=json.loads(pending_chat[0].request.post_data)["session_id"]
-                    app.save_chat_history(chat_id,[{"role":"user","content":"Тест интерфейса ленты действий"},
+                    app.save_chat_history(chat_id,[{"role":"user","content":"Тест интерфейса ленты действий", "attachments":persisted_attachments},
                         {"role":"assistant","content":"Проверка завершена. Все тесты прошли.","codex_operation":"ui-fixture",
-                         "thinking":activity_steps,"activity":{"duration_ms":97000,"status":"completed"}}])
+                         "thinking":activity_steps,"activity":{"duration_ms":97000,"status":"completed"}, "images":generated_images}])
                     preview_chat[0] = False
                     page.reload()
                     expect(page.get_by_text("Работа завершена",exact=False)).to_be_visible(timeout=10000)
                     expect(page.get_by_text("Проверка завершена. Все тесты прошли.",exact=True)).to_have_count(1)
+                    expect(generated).to_be_visible()
+                    expect(generated).to_have_js_property("naturalWidth", 16)
+                    expect(page.get_by_role("button", name="Предпросмотр clipboard.png", exact=True)).to_be_visible()
                     page.get_by_text("Работа завершена",exact=False).click()
                     expect(page.get_by_text("Проверяю файлы проекта",exact=True)).to_be_visible()
                     page.get_by_role("button", name="Open menu", exact=True).click()
@@ -334,7 +354,7 @@ def main():
                     page.goto("about:blank")
                     context.unroute_all(behavior="wait")
                     browser.close()
-                    print("UI smoke passed: notes write failure/recovery, read-only startup/cache fallback, single init, blocked auth/send, preserved draft, quota, files, profiles, write-only password, engine switch")
+                    print("UI smoke passed: clipboard image/upload, centered controls, compact quota/auto refresh, global proxy hint, notes, files, profiles, blocked send, history recovery, engine switch")
             finally:
                 frontend.terminate()
                 try:

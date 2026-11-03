@@ -7,13 +7,17 @@ import types
 import unittest
 from unittest.mock import Mock, patch
 
-from codex_engine import LimitsCache, ProtocolError
-from codex_service import ApprovalQueue, ProfileSession, SessionBindings, redact
+from codex_engine import CodexBlocked, LimitsCache, ProtocolError
+from codex_proxy import ProxyUnavailable
+from codex_service import ApprovalQueue, CodexService, ProfileSession, SessionBindings, redact
 from tool_execution import ExecutionJournal, ToolExecutionError
 
 
 class SessionTests(unittest.TestCase):
     def setUp(self):
+        memory_context = patch("memory.user_profile.build_memory_context", return_value="")
+        self.memory_context = memory_context.start()
+        self.addCleanup(memory_context.stop)
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.session = ProfileSession("one", {"engine": "codex", "codex": {"proxy": "http://127.0.0.1:1"}},
@@ -31,7 +35,7 @@ class SessionTests(unittest.TestCase):
             if method == "turn/start":
                 if self.fail:
                     raise ProtocolError("connection lost")
-                self.session.notify("item/agentMessage/delta", {"threadId": params["threadId"], "delta": "answer"})
+                self.session.notify("item/agentMessage/delta", {"threadId": params["threadId"], "turnId": "turn-one", "delta": "answer"})
                 self.session.notify("turn/completed", {"threadId": params["threadId"], "turn": {"id": "turn-one", "status": "completed"}})
                 return {"turn": {"id": "turn-one"}}
             if method == "thread/read":
@@ -39,6 +43,54 @@ class SessionTests(unittest.TestCase):
                     {"id": "op-one", "type": "userMessage"}, {"type": "agentMessage", "text": "recovered answer"}]}]}}
             return {}
         self.session.rpc = Mock(side_effect=request)
+
+    def test_default_turn_can_complete_after_two_hours_without_interruption(self):
+        clock = [0.0]
+        done = Mock()
+        original_request = self.session.rpc.side_effect
+        waits = []
+        def wait_for_completion(timeout):
+            waits.append(timeout)
+            clock[0] += 3600
+            if len(waits) == 1:
+                return False
+            self.session.notify("item/agentMessage/delta", {"threadId": "thread-one", "turnId": "turn-one", "delta": "long answer"})
+            self.session.notify("turn/completed", {"threadId": "thread-one", "turn": {"id": "turn-one", "status": "completed"}})
+            return True
+        done.wait.side_effect = wait_for_completion
+        def request(method, params=None, **kwargs):
+            if method == "turn/start":
+                self.session.active[params["threadId"]]["done"] = done
+                return {"turn": {"id": "turn-one"}}
+            return original_request(method, params, **kwargs)
+        self.session.rpc.side_effect = request
+        with patch("codex_service.time.monotonic", side_effect=lambda: clock[0]):
+            result = self.session.run("long-chat", "prompt", "long-op", threading.Event())
+        self.assertEqual(result["reply"], "long answer")
+        self.assertFalse(result["cancelled"])
+        self.assertEqual(result["activity"]["duration_ms"], 7200000)
+        self.assertFalse(any(call.args[0] == "turn/interrupt" for call in self.session.rpc.call_args_list))
+
+    def test_manual_stop_still_interrupts_an_unlimited_turn(self):
+        cancel = threading.Event()
+        cancel.set()
+        done = Mock()
+        done.wait.side_effect = [False, True]
+        original_request = self.session.rpc.side_effect
+        def request(method, params=None, **kwargs):
+            if method == "turn/start":
+                self.session.active[params["threadId"]]["done"] = done
+                return {"turn": {"id": "turn-one"}}
+            if method == "turn/interrupt":
+                self.session.notify("turn/completed", {"threadId": "thread-one", "turn": {"id": "turn-one", "status": "interrupted"}})
+                return {}
+            return original_request(method, params, **kwargs)
+        self.session.rpc.side_effect = request
+        result = self.session.run("stop-chat", "prompt", "stop-op", cancel)
+        self.assertTrue(result["cancelled"])
+        self.assertEqual(result["activity"]["status"], "interrupted")
+        interrupts = [call for call in self.session.rpc.call_args_list if call.args[0] == "turn/interrupt"]
+        self.assertEqual(len(interrupts), 1)
 
     def test_stream_and_completed_request_are_not_replayed(self):
         texts = []
@@ -49,15 +101,106 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(self.session.run("chat-one", "prompt", "op-one", threading.Event()), result)
         self.assertEqual(len(self.calls), count)
 
+    def test_stale_turn_events_before_and_after_start_response_are_ignored(self):
+        original = self.session.rpc.side_effect
+        texts = []
+        def emit(turn_id, text):
+            self.session.notify("item/agentMessage/delta", {"threadId": "thread-one", "turnId": turn_id, "delta": text})
+            self.session.notify("item/reasoning/summaryTextDelta", {"threadId": "thread-one", "turnId": turn_id, "delta": text})
+            self.session.notify("turn/completed", {"threadId": "thread-one", "turn": {"id": turn_id, "status": "completed"}})
+        def request(method, params=None, **kwargs):
+            if method == "turn/start":
+                emit("old-turn", "stale before response")
+                emit(None, "unscoped event")
+                emit("turn-one", "current")
+                self.assertEqual(texts, [])
+                return {"turn": {"id": "turn-one"}}
+            return original(method, params, **kwargs)
+        self.session.rpc.side_effect = request
+        bind = self.session._bind_turn
+        def bind_with_late_events(thread_id, active, turn_id):
+            bind(thread_id, active, turn_id)
+            emit("old-turn", "stale after response")
+            self.session.notify("item/completed", {"threadId": thread_id, "turnId": "old-turn",
+                "item": {"id": "stale", "type": "agentMessage", "text": "stale final"}})
+            self.assertEqual(active["turn"]["id"], "turn-one")
+        with patch.object(self.session, "_bind_turn", side_effect=bind_with_late_events):
+            result = self.session.run("chat", "prompt", "op", threading.Event(), on_text=texts.append)
+        self.assertEqual((result["reply"], result["reasoning"]), ("current", "current"))
+        self.assertEqual(texts, ["current"])
+
+    def test_stale_completion_cannot_finish_bound_turn(self):
+        active = {"turn_id": "new", "turn": {}, "done": threading.Event()}
+        self.session.active["thread-one"] = active
+        self.session.notify("turn/completed", {"threadId": "thread-one", "turn": {"id": "old", "status": "completed"}})
+        self.assertFalse(active["done"].is_set())
+        self.assertEqual(active["turn"], {})
+
+    def test_memory_is_refreshed_on_resume_without_changing_thread_identity(self):
+        from memory.user_profile import format_facts_block
+        self.session.runtime.native = True
+        self.session.runtime.thread_context = Mock(return_value={})
+        self.session.history_reader = Mock(return_value=[])
+        block = format_facts_block([{"fact": "Пользователь использует Samsung Galaxy S25 Ultra", "category": "hardware"}])
+        self.memory_context.return_value = "\n\n" + block
+        self.session.run("chat", "Какой у меня телефон?", "op1", threading.Event())
+        arguments = next(params for method, params in self.calls if method == "thread/start")
+        first_turn = next(params for method, params in self.calls if method == "turn/start")
+        self.assertIn("Samsung Galaxy S25 Ultra", first_turn["input"][0]["text"])
+        self.assertIn("Proactively save stable facts", arguments["developerInstructions"])
+        self.memory_context.return_value = ""
+        self.session.run("chat", "Другое сообщение", "op2", threading.Event())
+        resumed = next(params for method, params in self.calls if method == "thread/resume")
+        self.assertNotIn("Samsung Galaxy S25 Ultra", resumed["developerInstructions"])
+        last_turn = [params for method, params in self.calls if method == "turn/start"][-1]
+        self.assertIn("No profile facts retrieved.", last_turn["input"][0]["text"])
+        self.assertEqual(resumed["threadId"], "thread-one")
+        self.session.history_reader.assert_not_called()
+        self.memory_context.assert_called_with("Другое сообщение")
+
+    def test_local_image_is_in_official_turn_input_without_remote_fetch(self):
+        image = {"type": "localImage", "path": "C:\\example\\image.png"}
+        self.session.run("image-chat", "describe", "image-op", threading.Event(), input_items=[image])
+        sent = next(params for method, params in self.calls if method == "turn/start")
+        self.assertIn("profile memory snapshot", sent["input"][0]["text"])
+        self.assertEqual(sent["input"][1:], [{"type": "text", "text": "describe"}, image])
+
+    def test_generated_image_survives_notifications_cached_result_and_recovery(self):
+        import base64
+        import io
+        from PIL import Image
+        stream = io.BytesIO()
+        Image.new("RGB", (10, 10), "blue").save(stream, format="PNG")
+        item = {"id": "image-one", "type": "imageGeneration", "status": "completed",
+                "result": base64.b64encode(stream.getvalue()).decode()}
+        original = self.session.rpc.side_effect
+        def request(method, params=None, **kwargs):
+            if method == "turn/start":
+                self.session.notify("item/completed", {"threadId": params["threadId"], "turnId": "turn-one", "item": item})
+                # A duplicate completion must not display the image twice.
+                self.session.notify("item/completed", {"threadId": params["threadId"], "turnId": "turn-one", "item": item})
+            if method == "thread/read":
+                return {"thread": {"turns": [{"id": "turn-one", "status": "completed", "items": [item]}]}}
+            return original(method, params, **kwargs)
+        self.session.rpc.side_effect = request
+        result = self.session.run("image-chat", "draw", "image-op", threading.Event())
+        self.assertEqual(len(result["images"]), 1)
+        self.assertEqual(self.session.run("image-chat", "draw", "image-op", threading.Event())["images"], result["images"])
+        binding = self.session.bindings.read("image-chat")
+        binding["status"] = "uncertain"
+        self.session.bindings.write("image-chat", binding)
+        recovered = self.session.recover("image-chat")
+        self.assertEqual(recovered["images"], result["images"])
+
     def test_commentary_and_final_items_do_not_duplicate_the_answer(self):
         def request(method, params=None, **kwargs):
             if method == "thread/start": return {"thread":{"id":"phase-thread"}}
             if method == "turn/start":
                 for item_id, phase, text in (("progress","commentary","Создаю документ"),("final","final_answer","Документ создан.")):
-                    self.session.notify("item/started", {"threadId":"phase-thread","item":{"id":item_id,"type":"agentMessage","phase":phase}})
-                    self.session.notify("item/agentMessage/delta", {"threadId":"phase-thread","itemId":item_id,"delta":text})
-                    self.session.notify("item/completed", {"threadId":"phase-thread","item":{"id":item_id,"type":"agentMessage","phase":phase,"text":text}})
-                self.session.notify("turn/completed", {"threadId":"phase-thread","turn":{"status":"completed"}})
+                    self.session.notify("item/started", {"threadId":"phase-thread","turnId":"phase-turn","item":{"id":item_id,"type":"agentMessage","phase":phase}})
+                    self.session.notify("item/agentMessage/delta", {"threadId":"phase-thread","turnId":"phase-turn","itemId":item_id,"delta":text})
+                    self.session.notify("item/completed", {"threadId":"phase-thread","turnId":"phase-turn","item":{"id":item_id,"type":"agentMessage","phase":phase,"text":text}})
+                self.session.notify("turn/completed", {"threadId":"phase-thread","turnId":"phase-turn","turn":{"status":"completed"}})
                 return {"turn":{"id":"phase-turn"}}
             return {}
         self.session.rpc.side_effect=request
@@ -100,14 +243,109 @@ class SessionTests(unittest.TestCase):
             self.session.run("chat-one", "prompt", "op-one", cancelled)
         self.assertTrue(cancelled.is_set(), "Failed turns must cancel their pending approvals")
         self.assertEqual(self.session.bindings.read("chat-one")["status"], "uncertain")
-        with self.assertRaises(ProtocolError):
-            self.session.run("chat-one", "prompt", "op-two", threading.Event())
-        self.assertEqual(sum(method == "turn/start" for method, _ in self.calls), 1)
         recovered = self.session.recover("chat-one")
         self.assertEqual(recovered["reply"], "recovered answer")
         self.assertEqual(sum(method == "turn/start" for method, _ in self.calls), 1)
         resume = next(params for method, params in self.calls if method == "thread/resume")
         self.assertIn("1234", resume["config"]["mcp_servers"]["kid"]["args"])
+
+    def test_new_message_recovers_previous_turn_without_replaying_it(self):
+        self.fail = True
+        with self.assertRaises(ProtocolError):
+            self.session.run("chat-one", "old", "op-one", threading.Event())
+        self.fail = False
+        result = self.session.run("chat-one", "new", "op-two", threading.Event())
+        self.assertEqual(result["reply"], "answer")
+        starts = [params for method, params in self.calls if method == "turn/start"]
+        self.assertEqual([p["clientUserMessageId"] for p in starts], ["op-one", "op-two"])
+        self.assertEqual(self.session.bindings.read("chat-one")["operations"]["op-one"]["status"], "completed")
+
+    def test_unacknowledged_missing_turn_uses_fresh_thread_and_keeps_tombstone(self):
+        self.fail = True
+        with self.assertRaises(ProtocolError):
+            self.session.run("chat-one", "old", "op-one", threading.Event())
+        self.fail = False
+        original = self.session.rpc.side_effect
+        self.session.rpc.side_effect = lambda method, params=None, **kw: (
+            {"thread": {"turns": []}} if method == "thread/read" else original(method, params, **kw))
+        self.session.run("chat-one", "new", "op-two", threading.Event())
+        binding = self.session.bindings.read("chat-one")
+        self.assertEqual(binding["operations"]["op-one"]["status"], "abandoned")
+        self.assertEqual(sum(method == "thread/start" for method, _ in self.calls), 2)
+        with self.assertRaises(ProtocolError):
+            self.session.run("chat-one", "old", "op-one", threading.Event())
+
+    def test_new_message_interrupts_known_running_turn_before_starting(self):
+        self.session.bindings.write("chat-one", {"thread_id": "thread-one", "turn_id": "old-turn",
+            "operation_id": "old-op", "status": "uncertain"})
+        original = self.session.rpc.side_effect
+        reads = ["inProgress", "interrupted"]
+        def request(method, params=None, **kw):
+            if method == "thread/read":
+                self.calls.append((method, params))
+                return {"thread": {"turns": [{"id": "old-turn", "status": reads.pop(0), "items": []}]}}
+            return original(method, params, **kw)
+        self.session.rpc.side_effect = request
+        self.session.run("chat-one", "new", "new-op", threading.Event())
+        methods = [method for method, _ in self.calls]
+        self.assertLess(methods.index("turn/interrupt"), methods.index("turn/start"))
+
+    def test_failed_validation_does_not_leave_an_uncertain_turn(self):
+        self.session.options["effort"] = "unsupported"
+        with self.assertRaises(ProtocolError):
+            self.session.run("chat-one", "old", "op-one", threading.Event())
+        self.assertEqual(self.session.bindings.read("chat-one")["status"], "failed")
+        self.session.options["effort"] = ""
+        self.session.run("chat-one", "new", "op-two", threading.Event())
+
+    def test_start_retries_setup_with_fresh_runtime_after_proxy_failure(self):
+        self.session.start = types.MethodType(ProfileSession.start, self.session)
+        self.session.connection = None
+        first = Mock(stopped=threading.Event())
+        second = Mock(stopped=threading.Event())
+        self.session.runtime = first
+        self.session.rpc = Mock(return_value={})
+        connection = Mock(closed=False)
+        with patch("codex_service.probe_exit", side_effect=[ProxyUnavailable(), {"exit_ip": "203.0.113.1"}]), \
+             patch("codex_service.runtime_for", return_value=second), \
+             patch("codex_service.StdioConnection", return_value=connection), \
+             patch("codex_service.time.sleep"), patch.object(self.session, "_poll_limits"):
+            self.session.start()
+        first.close.assert_called()
+        second.start_worker.assert_called_once()
+        self.assertFalse(self.session.closed.is_set())
+        self.assertIs(self.session.runtime, second)
+
+    def test_proxy_setup_retry_is_bounded(self):
+        self.session.start = types.MethodType(ProfileSession.start, self.session)
+        with patch.object(self.session, "_start_once", side_effect=CodexBlocked()) as start, \
+             patch("codex_service.time.sleep"):
+            with self.assertRaises(CodexBlocked):
+                self.session.start()
+        self.assertEqual(start.call_count, 2)
+
+    def test_service_replaces_closed_transport_without_manual_proxy_check(self):
+        service = CodexService(self.directory.name)
+        profile = self.session.profile
+        self.session.connection.close = Mock()
+        with patch("codex_proxy.effective_profile", return_value=profile), \
+             patch("codex_service.ProfileSession", return_value=self.session) as factory:
+            self.assertIs(service.get("one", profile), self.session)
+            self.session.connection.closed = True
+            replacement = Mock()
+            factory.return_value = replacement
+            self.assertIs(service.get("one", profile), replacement)
+        self.assertTrue(self.session.closed.is_set())
+
+    def test_successful_connection_clears_old_status_error(self):
+        service = CodexService(self.directory.name)
+        service.errors["one"] = "temporary proxy failure"
+        self.session.runtime.image_metadata = Mock()
+        with patch.object(service, "get", return_value=self.session):
+            status = service.status("one", self.session.profile)
+        self.assertTrue(status["available"])
+        self.assertEqual(status["proxy_state"], "verified")
+        self.assertNotIn("one", service.errors)
 
     def test_concurrent_same_chat_is_rejected_before_rpc(self):
         self.session.session_locks["chat-one"].acquire()
@@ -152,9 +390,19 @@ class SessionTests(unittest.TestCase):
         self.session.active["thread-one"] = {"session_id": "chat-one", "cancel": threading.Event()}
         self.session.isolated_tool = Mock()
         result = self.session.tool_bridge({"kind": "tool_call", "request": {
-            "session_id": "chat-one", "name": "fetch_webpage", "arguments": {"url": "https://example.com"}}})
+            "session_id": "chat-one", "name": "web_search", "arguments": {"query": "example"}}})
         self.assertTrue(result["isError"])
         self.session.isolated_tool.assert_not_called()
+
+    def test_url_reader_remains_available_with_native_codex_search(self):
+        self.session.options["search"] = "codex"
+        self.session.active["thread-one"] = {"session_id": "chat-one", "cancel": threading.Event(),
+            "steps": [], "operation_id": "read-op"}
+        self.session.isolated_tool = Mock(return_value={"text_content": "page", "route": "proxy"})
+        result = self.session.tool_bridge({"kind": "tool_call", "request": {
+            "session_id": "chat-one", "name": "fetch_webpage", "arguments": {"url": "https://public.test/page"}}})
+        self.assertFalse(result["isError"])
+        self.session.isolated_tool.assert_called_once()
 
     def test_research_uses_injected_codex_instead_of_paid_api(self):
         from research_controller import make_controller
@@ -194,11 +442,30 @@ class SessionTests(unittest.TestCase):
         result = self.session.run("migrate-chat", "Continue", "new-operation", threading.Event())
         self.assertEqual(result["reply"], "answer")
         turn = next(params for method, params in self.calls if method == "turn/start")
-        text = turn["input"][0]["text"]
+        text = turn["input"][1]["text"]
         self.assertIn("Earlier request", text)
         self.assertIn("do not repeat completed actions", text)
         self.assertTrue(text.endswith("Continue"))
         self.assertFalse(any(method == "thread/resume" for method, _ in self.calls))
+
+    def test_updated_instructions_migrate_saved_native_thread_with_history(self):
+        self.session.history_reader = lambda _: [{"role": "assistant", "content": "Earlier answer"}]
+        self.session.run("rules-chat", "first", "rules-one", threading.Event())
+        self.calls.clear()
+        self.session.profile["system_prompt"] = "Updated profile instructions"
+        self.session.run("rules-chat", "next", "rules-two", threading.Event())
+        self.assertTrue(any(method == "thread/start" for method, _ in self.calls))
+        self.assertFalse(any(method == "thread/resume" for method, _ in self.calls))
+        turn = next(params for method, params in self.calls if method == "turn/start")
+        self.assertIn("Earlier answer", turn["input"][1]["text"])
+
+    def test_relay_port_change_does_not_reset_native_thread(self):
+        self.session.run("port-chat", "first", "port-one", threading.Event())
+        self.calls.clear()
+        self.session.runtime.tool_port = 5678
+        self.session.run("port-chat", "next", "port-two", threading.Event())
+        self.assertTrue(any(method == "thread/resume" for method, _ in self.calls))
+        self.assertFalse(any(method == "thread/start" for method, _ in self.calls))
 
     def test_windows_tools_route_to_host_once_in_both_search_modes(self):
         self.session.local_tools=Mock(return_value={"ok":True,"platform":"Windows","path":"C:/Desktop/test.md"})

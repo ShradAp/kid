@@ -23,19 +23,81 @@ from native_codex.probe import verify_transports
 
 
 class WfpPolicyTests(unittest.TestCase):
+    def test_http_login_screen_is_not_reported_as_read(self):
+        import requests
+        from native_codex.tools import execute
+        from tool_execution import ToolExecutionError
+        from test_guest_transport import response
+        with patch("guest_transport.configured_proxy", return_value=""), \
+             patch("guest_transport.is_safe_target", return_value=True), \
+             patch.object(requests.Session, "request", return_value=response()), \
+             patch("trafilatura.extract", return_value="Log in"), \
+             patch("guest_browser.read_page", return_value={"status": "unavailable", "reason": "login_screen"}):
+            with self.assertRaises(ToolExecutionError) as error:
+                execute("fetch_webpage", {"url": "https://public.test/page"}, threading.Event(), None)
+        self.assertEqual(json.loads(str(error.exception))["reason"], "login_screen")
+
+    def test_http_challenge_invokes_browser_with_same_proxy(self):
+        import requests
+        from native_codex.tools import execute
+        from test_guest_transport import response
+        rendered = {"status": "read", "read_method": "browser", "route": "proxy", "text_content": "Rendered article"}
+        with patch("guest_transport.configured_proxy", return_value="http://user:secret@proxy.test:80"), \
+             patch("guest_transport.is_safe_target", return_value=True), \
+             patch.object(requests.Session, "request", side_effect=[response(403), response(body=b"Unavailable in your country")]), \
+             patch("guest_browser.read_page", return_value=rendered) as render:
+            result = json.loads(execute("fetch_webpage", {"url": "https://public.test/page"}, threading.Event(), None))
+        self.assertEqual(result["read_method"], "browser")
+        self.assertEqual(render.call_args.kwargs["proxy_url"], "http://user:secret@proxy.test:80")
+        self.assertEqual(result["http_reason"], "regional_block")
+        self.assertNotIn("secret", json.dumps(result))
+
+    def test_url_reader_uses_configured_proxy_fallback_and_reports_route(self):
+        import requests
+        from native_codex.tools import execute
+        from test_guest_transport import response
+        with patch("guest_transport.configured_proxy", return_value="http://user:secret@proxy.test:80"), \
+             patch("guest_transport.is_safe_target", return_value=True), \
+             patch.object(requests.Session, "request", side_effect=[response(403), response(body=b"<p>Article</p>")]) as request, \
+             patch("trafilatura.extract", return_value="Article"):
+            result = json.loads(execute("fetch_webpage", {"url": "https://public.test/page"}, threading.Event(), None))
+        self.assertEqual(result["status"], "read")
+        self.assertEqual(result["route"], "proxy")
+        self.assertEqual(result["transport"]["requests"], 2)
+        self.assertIsNone(request.call_args_list[0].kwargs["proxies"]["https"])
+        self.assertNotIn("secret", json.dumps(result))
+        self.assertNotIn("proxy.test", json.dumps(result))
+
+    def test_url_reader_does_not_claim_empty_page_was_read(self):
+        import requests
+        from native_codex.tools import execute
+        from test_guest_transport import response
+        with patch("guest_transport.configured_proxy", return_value=""), \
+             patch("guest_transport.is_safe_target", return_value=True), \
+             patch.object(requests.Session, "request", return_value=response()), \
+             patch("trafilatura.extract", return_value=None), \
+             patch("guest_browser.read_page", return_value={"status": "unavailable", "reason": "empty"}):
+            result = json.loads(execute("fetch_webpage", {"url": "https://public.test/page"}, threading.Event(), None))
+        self.assertEqual(result["status"], "empty")
+        self.assertTrue(result["limitation"])
+
     def test_native_search_schema_and_mcp_boundary(self):
         from native_codex.schema import tools
         from native_codex.runtime import NativeRuntime
         names = lambda mode: {item["name"] for item in tools(mode)}
         self.assertTrue({"web_search", "fetch_webpage", "analyze_github_repo"} <= names("kid"))
-        self.assertFalse({"web_search", "fetch_webpage", "analyze_github_repo"} & names("codex"))
+        self.assertFalse({"web_search", "analyze_github_repo"} & names("codex"))
+        self.assertIn("fetch_webpage", names("codex"))
         self.assertTrue({"windows_command", "windows_write_file", "save_note", "manage_memory"} <= names("codex"))
         runtime = NativeRuntime("root", "profile", ProxyEndpoint.parse("http://127.0.0.1:1"))
         runtime.tool_port = 1234
         context = runtime.thread_context("chat", "kid")
-        self.assertEqual(context["sandbox"], "read-only")
+        self.assertEqual(context["sandbox"], "workspace-write")
         self.assertEqual(context["config"]["mcp_servers"]["kid"]["default_tools_approval_mode"], "approve")
         self.assertTrue(context["config"]["mcp_servers"]["kid"]["required"])
+        writer = next(item for item in tools("kid") if item["name"] == "windows_write_file")
+        self.assertIn(".py", writer["description"])
+        self.assertIn("after kid's approval", writer["description"])
 
     def test_native_research_gets_codex_callback_and_never_calls_api(self):
         from native_codex.tools import execute

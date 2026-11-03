@@ -74,7 +74,7 @@ export function ProfilesModal({
   useEffect(() => {
     if (open) {
       setEngine(persona.engine ?? "api");
-      setCodex({ ...(persona.codex ?? defaultCodexSettings), proxy_password: "", clear_proxy_password: false });
+      setCodex({ ...(persona.codex ?? defaultCodexSettings) });
       setName(persona.name ?? "");
       setColor(persona.color ?? "auto");
       setSystemPrompt(persona.systemPrompt ?? "");

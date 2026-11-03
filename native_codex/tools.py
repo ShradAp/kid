@@ -4,16 +4,52 @@ from tool_execution import execute_tool, ToolExecutionError
 
 
 def execute(name, arguments, cancel, model_call):
+    def transcribe(url, quality="accurate", language=None, vocabulary="", refresh=False):
+        from services.media_transcription import transcribe_media
+        return transcribe_media(url, cancel, quality=quality, language=language, vocabulary=vocabulary, refresh=refresh)
+
     def read_page(url):
         if cancel.is_set():
             raise ToolExecutionError("Чтение отменено")
-        from guest_transport import GuestSession
+        from guest_transport import GuestSession, GuestTransportError
         import trafilatura
-        with GuestSession(timeout=20, max_requests=5, max_bytes=4_000_000) as session:
-            response = session.get(url, timeout=(5, 15))
-            response.raise_for_status()
-            text = trafilatura.extract(response.text, include_comments=True) or ""
-        return {"url": response.url, "text_content": text[:100000], "status": "read",
+        fallback = False
+        try:
+            with GuestSession(timeout=20, max_requests=8, max_bytes=4_000_000) as session:
+                response = session.get(url, timeout=(5, 15))
+                if response.status_code >= 400:
+                    failure = {"status": "unavailable", "reason": f"HTTP {response.status_code}",
+                               "route": response.kid_route, "transport": session.diagnostics()}
+                    fallback = response.status_code in (403, 408, 451, 500, 502, 503, 504)
+                    if not fallback:
+                        raise ToolExecutionError(json.dumps(failure, ensure_ascii=False))
+                    text = ""
+                else:
+                    text = trafilatura.extract(response.text, include_comments=True) or ""
+                    from guest_browser import unreadable_page
+                    refusal = unreadable_page(text)
+                    failure = {"status": "unavailable" if refusal else "empty", "reason": refusal or "no_readable_text"}
+                    fallback = bool(refusal) or not text.strip()
+                transport = session.diagnostics()
+        except GuestTransportError as error:
+            failure = {"status": "unavailable", "reason": str(error), "transport": session.diagnostics()}
+            fallback = str(error) in ("network_unavailable", "regional_block", "browser_challenge")
+            if not fallback:
+                raise ToolExecutionError(json.dumps(failure, ensure_ascii=False)) from None
+        if fallback:
+            from guest_browser import read_page as render_page
+            rendered = render_page(url, cancel, proxy_url=session.proxy_url)
+            rendered["transport"] = session.diagnostics()
+            rendered["http_reason"] = failure["reason"]
+            if rendered["status"] == "read":
+                return rendered
+            if failure["status"] == "empty":
+                return {**rendered, "status": "empty", "text_content": "",
+                    "limitation": "No readable text after browser rendering; login or CAPTCHA may be required"}
+            raise ToolExecutionError(json.dumps(rendered, ensure_ascii=False))
+        return {"url": response.url, "text_content": text[:100000], "status": "read" if text.strip() else "empty", "content_kind": "page_text",
+                "limitation": "" if text.strip() else "No readable text; JavaScript or authentication may be required",
+                "route": response.kid_route, "transport": transport,
                 "read_method": "text", "visual_opened": False, "source_truncated": len(text) > 100000}
 
     def search(query, objective=None, sources=None):
@@ -48,11 +84,11 @@ def execute(name, arguments, cancel, model_call):
         import file_tools
         return file_tools.create_downloadable_file(**kwargs)
 
-    def memory(action, **kwargs):
+    def memory(handler_name, **kwargs):
         from memory import user_profile
-        return getattr(user_profile, action)(**kwargs)
+        return getattr(user_profile, handler_name)(**kwargs)
 
-    return execute_tool(name, arguments, {"local_search": local_search, "web_search": search,
+    return execute_tool(name, arguments, {"transcribe_media": transcribe, "local_search": local_search, "web_search": search,
         "fetch_webpage": lambda url: json.dumps(read_page(url), ensure_ascii=False),
         "analyze_github_repo": github, "create_downloadable_file": create_file,
         "remember_user_fact": lambda **kwargs: memory("remember_user_fact", **kwargs),

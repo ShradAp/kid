@@ -37,23 +37,137 @@ class TransportTests(unittest.TestCase):
             target.write_text(json.dumps({"proxy_mode": "direct", "proxy_url": "http://127.0.0.1:1234"}), encoding="utf-8")
             self.assertEqual(g.configured_proxy(), "")
 
-    def test_proxy_first_and_direct_fallback_without_leaking_secret(self):
+    def test_direct_first_and_proxy_fallback_without_leaking_secret(self):
         with g.GuestSession(proxy_url="http://private-user:private-password@proxy.test:80") as session, \
              patch.object(g, "is_safe_target", return_value=True), \
-             patch.object(requests.Session, "request", side_effect=[requests.exceptions.ProxyError("private-password"), response()]) as request:
+             patch.object(requests.Session, "request", side_effect=[requests.exceptions.ConnectionError("private-password"), response()]) as request:
             result = session.get("https://t.me/channel/1")
         self.assertEqual(result.text, "ok")
-        self.assertIn("proxy.test", request.call_args_list[0].kwargs["proxies"]["https"])
-        self.assertIsNone(request.call_args_list[1].kwargs["proxies"]["https"])
+        self.assertIsNone(request.call_args_list[0].kwargs["proxies"]["https"])
+        self.assertIn("proxy.test", request.call_args_list[1].kwargs["proxies"]["https"])
+        self.assertEqual(result.kid_route, "proxy")
         self.assertNotIn("private-password", json.dumps(session.diagnostics()))
         self.assertNotIn("private-user", json.dumps(session.diagnostics()))
 
-    def test_successful_proxy_does_not_retry_direct(self):
+    def test_successful_direct_does_not_use_proxy(self):
         with g.GuestSession(proxy_url="http://proxy.test:80") as session, \
              patch.object(g, "is_safe_target", return_value=True), \
              patch.object(requests.Session, "request", return_value=response()) as request:
             session.get("https://t.me/channel/1")
         self.assertEqual(request.call_count, 1)
+        self.assertIsNone(request.call_args.kwargs["proxies"]["https"])
+
+    def test_http_refusal_retries_once_through_proxy(self):
+        for status in (403, 408, 451, 500, 502, 503, 504):
+            with self.subTest(status=status), g.GuestSession(proxy_url="http://proxy.test:80") as session, \
+                 patch.object(g, "is_safe_target", return_value=True), \
+                 patch.object(requests.Session, "request", side_effect=[response(status), response()]) as request:
+                self.assertEqual(session.get("https://public.test/page").kid_route, "proxy")
+                self.assertEqual(request.call_count, 2)
+
+    def test_regional_refusal_with_http_200_uses_proxy(self):
+        for body in (b"This content is not available in your region", b'{"error":"country_not_supported"}',
+                     "Доступ ограничен в вашей стране".encode()):
+            with self.subTest(body=body), g.GuestSession(proxy_url="http://proxy.test:80") as session, \
+                 patch.object(g, "is_safe_target", return_value=True), \
+                 patch.object(requests.Session, "request", side_effect=[response(body=body), response()]):
+                self.assertEqual(session.get("https://public.test/page").kid_route, "proxy")
+                self.assertEqual(session.diagnostics()["attempts"][0]["reason"], "regional_block")
+
+    def test_region_refusal_on_both_routes_does_not_claim_success(self):
+        with g.GuestSession(proxy_url="http://proxy.test:80") as session, \
+             patch.object(g, "is_safe_target", return_value=True), \
+             patch.object(requests.Session, "request", side_effect=[response(403), response(body=b"Unavailable in your country")]) as request:
+            with self.assertRaisesRegex(g.GuestTransportError, "regional_block"):
+                session.get("https://public.test/page")
+        self.assertEqual(request.call_count, 2)
+
+    def test_embedded_regional_error_in_large_html_retries_proxy(self):
+        body = b"<html><title>Video</title>" + b" " * 100000 + b'<script>{"error":"cross_border_block"}</script>'
+        with g.GuestSession(proxy_url="http://proxy.test:80") as session, \
+             patch.object(g, "is_safe_target", return_value=True), \
+             patch.object(requests.Session, "request", side_effect=[response(body=body, headers={"Content-Type": "text/html"}), response()]) as request:
+            self.assertEqual(session.get("https://public.test/page").kid_route, "proxy")
+        self.assertEqual(request.call_count, 2)
+
+    def test_html_challenge_retries_proxy_instead_of_returning_empty_success(self):
+        body = b'<html><script>challenge()</script><body>Please wait...</body></html>'
+        with g.GuestSession(proxy_url="http://proxy.test:80") as session, \
+             patch.object(g, "is_safe_target", return_value=True), \
+             patch.object(requests.Session, "request", side_effect=[response(body=body), response()]) as request:
+            self.assertEqual(session.get("https://public.test/page").kid_route, "proxy")
+            self.assertEqual(session.attempts[0]["reason"], "browser_challenge")
+        self.assertEqual(request.call_count, 2)
+
+    def test_no_proxy_retry_for_not_found_login_or_rate_limit(self):
+        for status in (401, 404, 429):
+            with self.subTest(status=status), g.GuestSession(proxy_url="http://proxy.test:80") as session, \
+                 patch.object(g, "is_safe_target", return_value=True), \
+                 patch.object(requests.Session, "request", return_value=response(status)) as request:
+                self.assertEqual(session.get("https://public.test/page").status_code, status)
+                self.assertEqual(request.call_count, 1)
+
+    def test_strict_transport_never_uses_direct_route(self):
+        with patch.dict("os.environ", {"KID_STRICT_PROXY": "1"}), \
+             g.GuestSession(proxy_url="http://proxy.test:80") as session, \
+             patch.object(g, "is_safe_target", return_value=True), \
+             patch.object(requests.Session, "request", side_effect=requests.exceptions.ProxyError("secret")) as request:
+            with self.assertRaisesRegex(g.GuestTransportError, "network_unavailable"):
+                session.get("https://public.test/page")
+        self.assertEqual(request.call_count, 1)
+        self.assertEqual(request.call_args.kwargs["proxies"]["https"], "http://proxy.test:80")
+
+    def test_post_is_never_replayed_through_proxy(self):
+        with g.GuestSession(proxy_url="http://proxy.test:80") as session, \
+             patch.object(g, "is_safe_target", return_value=True), \
+             patch.object(requests.Session, "request", side_effect=requests.exceptions.ConnectionError()) as request:
+            with self.assertRaises(g.GuestTransportError):
+                session.post("https://public.test/page", data={"message": "one"})
+        self.assertEqual(request.call_count, 1)
+
+    def test_redirect_target_is_validated_before_proxy_fallback(self):
+        with g.GuestSession(proxy_url="http://proxy.test:80") as session, \
+             patch.object(g, "is_safe_target", side_effect=[True, False]), \
+             patch.object(requests.Session, "request", return_value=response(302, headers={"Location": "http://127.0.0.1/private"})) as request:
+            with self.assertRaisesRegex(g.GuestTransportError, "unsafe_target"):
+                session.get("https://public.test/page")
+        self.assertEqual(request.call_count, 1)
+
+    def test_missing_proxy_does_not_create_another_direct_attempt(self):
+        with g.GuestSession(proxy_url="") as session, \
+             patch.object(g, "is_safe_target", return_value=True), \
+             patch.object(requests.Session, "request", side_effect=requests.exceptions.ConnectionError()) as request:
+            with self.assertRaisesRegex(g.GuestTransportError, "network_unavailable"):
+                session.get("https://public.test/page")
+        self.assertEqual(request.call_count, 1)
+
+    def test_failed_proxy_ends_fallback_without_secrets_or_loop(self):
+        with g.GuestSession(proxy_url="http://private-user:private-password@proxy.test:80") as session, \
+             patch.object(g, "is_safe_target", return_value=True), \
+             patch.object(requests.Session, "request", side_effect=requests.exceptions.ConnectionError("private-password")) as request:
+            with self.assertRaises(g.GuestTransportError) as error:
+                session.get("https://public.test/page")
+        self.assertEqual(request.call_count, 2)
+        self.assertNotIn("private-password", str(error.exception) + json.dumps(session.diagnostics()))
+
+    def test_quoted_regional_error_in_long_article_does_not_change_route(self):
+        body = b"<html><title>Network troubleshooting</title><p>Not available in your country</p>" + b"article " * 2000
+        self.assertFalse(g.regional_block(response(body=body, headers={"Content-Type": "text/html"})))
+        self.assertFalse(g.regional_block(response(body=b"Unavailable in your country", headers={"Content-Type": "image/png"})))
+
+    def test_fallback_keeps_shared_byte_budget(self):
+        with g.GuestSession(proxy_url="http://proxy.test:80", max_bytes=45) as session, \
+             patch.object(g, "is_safe_target", return_value=True), \
+             patch.object(requests.Session, "request", side_effect=[response(body=b"Unavailable in your country"), response(body=b"x" * 30)]):
+            with self.assertRaisesRegex(g.GuestTransportError, "byte_limit"):
+                session.get("https://public.test/page")
+
+    def test_strict_transport_requires_proxy_before_any_dial(self):
+        with patch.dict("os.environ", {"KID_STRICT_PROXY": "1"}), \
+             g.GuestSession(proxy_url="") as session, patch.object(requests.Session, "request") as request:
+            with self.assertRaisesRegex(g.GuestTransportError, "proxy_required"):
+                session.get("https://public.test/page")
+        request.assert_not_called()
 
     def test_request_cap_includes_redirects(self):
         with g.GuestSession(proxy_url="", max_requests=1) as session, \
