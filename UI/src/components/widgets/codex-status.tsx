@@ -14,6 +14,7 @@ interface QuotaWindow {
 }
 
 interface CodexStatus {
+  connecting?: boolean;
   available: boolean;
   proxy_state: string;
   auth_state: string;
@@ -113,7 +114,7 @@ export function CodexQuota({ profileId }: { profileId: string }) {
       <ChevronDown className="size-3 text-muted-foreground" />
     </PopoverTrigger>
     <PopoverContent align="center" className="w-80 space-y-2 p-4">
-      <p className="font-medium">{verified ? "Прокси: защищённый канал" : data?.proxy_state === "blocked" ? "Запросы Codex заблокированы" : "Прокси ещё не проверен"}</p>
+      <p className="font-medium">{verified ? "Прокси: защищённый канал" : data?.connecting ? "Автоматическое подключение к прокси…" : data?.proxy_state === "blocked" ? "Запросы Codex заблокированы" : "Подключение к прокси запускается автоматически"}</p>
       {slots.map(({ duration, label }) => <div key={duration} className="space-y-1 text-xs">
         <p className="font-medium">{label}</p>
         {windows.filter(item => item.duration_minutes === duration).map((item, index) => <p key={`${item.bucket}-${index}`} className="text-muted-foreground">{item.bucket}: {percent(item)} · {resetText(item.resets_at)}</p>)}

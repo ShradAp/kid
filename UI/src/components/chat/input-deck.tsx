@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, type ChangeEvent, type KeyboardEvent, type ClipboardEvent } from "react";
-import { Plus, Trash2, Square, X, Paperclip } from "lucide-react";
+import { Plus, Trash2, Square, X, Paperclip, Send, ListPlus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { VoiceControl } from "@/components/chat/voice-control";
 import {
@@ -37,6 +37,12 @@ export function InputDeck({
   onChange,
   onSend,
   onStop,
+  onSteer,
+  steering = false,
+  canSteer = false,
+  pendingRequests = [],
+  onRemoveQueued,
+  onStartQueued,
   onClearChat,
   isGenerating,
   attachments,
@@ -49,6 +55,12 @@ export function InputDeck({
   onChange: (value: string) => void;
   onSend: () => void;
   onStop: () => void;
+  onSteer?: () => void;
+  steering?: boolean;
+  canSteer?: boolean;
+  pendingRequests?: readonly { id: string; text: string; attachments: Attachment[] }[];
+  onRemoveQueued?: (index: number) => void;
+  onStartQueued?: () => void;
   onClearChat: () => void;
   isGenerating: boolean;
   attachments: Attachment[];
@@ -77,9 +89,14 @@ export function InputDeck({
       (e.nativeEvent as any).keyCode !== 229
     ) {
       e.preventDefault();
-      // Во время генерации повторный Enter — ничего не делает:
-      // он НЕ должен нажимать кнопку остановки ответа.
-      if (isGenerating) return;
+      if (steering) return;
+      if (isGenerating) {
+        if (e.altKey) onSend();
+        else if (e.ctrlKey || e.metaKey) return;
+        else if (canSteer) onSteer?.();
+        else if (onStartQueued) onSend();
+        return;
+      }
       if (value.trim() || attachments.length > 0) onSend();
     }
   }
@@ -202,6 +219,22 @@ export function InputDeck({
           </div>
         )}
 
+        {pendingRequests.length > 0 && <div className="mb-2 rounded-xl border border-white/10 bg-card p-2 text-sm" aria-label="Очередь запросов">
+          <div className="flex items-center justify-between"><span>В очереди: {pendingRequests.length}</span>
+            {!isGenerating && <Button size="sm" variant="ghost" onClick={onStartQueued}>Продолжить очередь</Button>}
+          </div>
+          {pendingRequests.map((request, index) => <div key={request.id} className="flex items-center gap-2">
+            <span className="min-w-0 flex-1 truncate">{index + 1}. {request.text || request.attachments.map((file) => file.name).join(", ")}</span>
+            <Button size="icon" variant="ghost" onClick={() => onRemoveQueued?.(index)} aria-label="Убрать запрос из очереди"><X className="size-3" /></Button>
+          </div>)}
+        </div>}
+        {isGenerating && onStartQueued && <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+          {canSteer && <Button size="sm" variant="outline" disabled={steering || (!value.trim() && !attachments.length)} onClick={onSteer}>
+            {steering ? "Передаём уточнение…" : "Уточнить задачу"}
+          </Button>}
+          <Button size="sm" variant="outline" disabled={steering || (!value.trim() && !attachments.length)} onClick={onSend}><ListPlus className="size-3" />В очередь</Button>
+          <span>{canSteer ? "Enter — уточнить · Alt+Enter — в очередь" : "Enter / Alt+Enter — в очередь"}</span>
+        </div>}
         <div className="flex items-center gap-1.5 rounded-3xl border border-white/10 bg-card/95 p-2 shadow-2xl shadow-black/40 backdrop-blur-md">
           <input
             ref={fileInputRef}
@@ -253,6 +286,7 @@ export function InputDeck({
               <Square className="size-3.5 fill-current" />
             </Button>
           )}
+          {!isGenerating && <Button size="icon" className="shrink-0 rounded-full" onClick={onSend} disabled={steering || (!value.trim() && !attachments.length)} aria-label="Отправить сообщение"><Send className="size-4" /></Button>}
 
           <AlertDialog>
             <Tooltip>

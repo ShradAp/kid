@@ -7,7 +7,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:chat-queue": "node scripts/check-chat-queue.cjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.5.0",

@@ -84,12 +84,15 @@ class FileTests(unittest.TestCase):
         self.assertEqual(len(images), 1)
         self.assertTrue(Path(images[0]["path"]).is_file())
 
-    def test_unknown_file_type_is_saved_without_claiming_it_was_read(self):
+    def test_unknown_file_type_is_passed_to_codex_for_tool_processing(self):
         self.bot.start()
         self.bot.accept_update(self.document(name="file.custom"))
         self.wait(lambda: bool(self.transport.sent))
         inputs = self.codex.get.return_value.run.call_args.kwargs["input_items"]
-        self.assertIn("не поддерживается", str(inputs))
+        attachment = self.bot.store.state()["history"][0]["attachments"][0]
+        self.assertIn(attachment["path"], "\n".join(item.get("text", "") for item in inputs))
+        self.assertIn("windows_command", str(inputs))
+        self.assertNotIn("не поддерживается", str(inputs))
         self.assertNotIn("FILE-ROUNDTRIP-42", str(inputs))
 
     def test_outgoing_tool_sends_immutable_snapshot_and_receipt(self):

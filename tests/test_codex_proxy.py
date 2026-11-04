@@ -6,7 +6,7 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from codex_proxy import ProxyEndpoint, ProxyUnavailable, connect_via_proxy, destination
+from codex_proxy import ProxyEndpoint, ProxyUnavailable, connect_via_proxy, destination, global_endpoint
 from codex_runtime import service_destination
 
 
@@ -26,6 +26,18 @@ class FixtureProxy(socketserver.ThreadingTCPServer):
 
 
 class ProxyTests(unittest.TestCase):
+    def test_invalid_global_settings_explain_block_without_credentials(self):
+        for configuration, explanation in (
+            ({"proxy_mode": "direct"}, "прямой режим"),
+            ({"proxy_mode": "custom", "proxy_url": ""}, "не задан"),
+            ({"proxy_mode": "custom", "proxy_url": "http://private-user:private-pass@proxy.invalid:80"}, "IP-адрес"),
+        ):
+            with self.subTest(configuration=configuration), self.assertRaises(ProxyUnavailable) as raised:
+                global_endpoint("unused", configuration)
+            self.assertIn(explanation, raised.exception.reason)
+            for secret in ("private-user", "private-pass", "proxy.invalid"):
+                self.assertNotIn(secret, raised.exception.reason)
+
     def start(self, handler):
         server = FixtureProxy(("127.0.0.1", 0), handler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)

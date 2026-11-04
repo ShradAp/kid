@@ -1,5 +1,7 @@
 import copy
 import json
+from pathlib import Path
+import tempfile
 import threading
 import types
 import unittest
@@ -55,12 +57,67 @@ class CodexChatTests(IsolatedStorageTestCase):
                 self.run_turn(profile={"engine": "codex", "request_timeout": timeout})
                 self.assertIsNone(self.service.get.return_value.run.call_args.kwargs["timeout"])
 
+    def test_drawio_original_reaches_codex_and_attachment_history(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory, "схема.drawio")
+            path.write_text('<mxfile><diagram>encoded-diagram</diagram></mxfile>', encoding="utf-8")
+            request = Request("/api/chat")
+            with patch.object(self.chat_codex, "load_chat_history", return_value=[]), \
+                 patch.object(self.chat_codex, "save_chat_history") as save:
+                self.chat_codex.run_turn(request,
+                    {"prompt": "Измени схему", "attachments": [{"path": str(path)}]},
+                    "chat", "profile", {"engine": "codex"},
+                    service=self.service, sessions=self.sessions, progress=self.progress,
+                    file_access=FileAccess((directory,)))
+            self.assertEqual(request.status, 200)
+            inputs = self.service.get.return_value.run.call_args.kwargs["input_items"]
+            self.assertIn(str(path), inputs[0]["text"])
+            self.assertEqual(save.call_args.args[1][0]["attachments"][0]["name"], path.name)
+
     def test_cancel_does_not_persist_turn(self):
         self.result["cancelled"] = True
         request, save = self.run_turn()
         self.assertEqual(request.status, 200)
         save.assert_not_called()
         self.assertFalse(self.sessions.memory)
+
+    def test_internal_error_is_not_reported_as_proxy_failure(self):
+        self.service.get.return_value.run.side_effect = RuntimeError("private-secret")
+        request, save = self.run_turn()
+        message = json.loads(request.wfile.getvalue())["error"]
+        self.assertEqual(request.status, 503)
+        self.assertIn("Внутренняя ошибка", message)
+        self.assertNotIn("Прокси недоступен", message)
+        self.assertNotIn("private-secret", message)
+        save.assert_not_called()
+
+    def test_proxy_failure_explains_what_needs_fixing(self):
+        from codex_proxy import ProxyUnavailable
+        self.service.get.side_effect = ProxyUnavailable("Прокси не задан в общих настройках")
+        request, save = self.run_turn()
+        self.assertIn("Прокси не задан", json.loads(request.wfile.getvalue())["error"])
+        save.assert_not_called()
+
+    def test_acknowledged_steers_are_saved_before_final_answer(self):
+        self.result["steers"] = [{"role": "user", "content": "clarification", "attachments": []}]
+        request, save = self.run_turn()
+        self.assertEqual(request.status, 200)
+        history = save.call_args.args[1]
+        self.assertEqual([item["role"] for item in history], ["user", "user", "assistant"])
+        self.assertEqual(history[1]["content"], "clarification")
+
+    def test_steer_endpoint_uses_existing_runtime_and_checks_chat_owner(self):
+        session = Mock(profile={})
+        self.service.lock = threading.RLock()
+        self.service.sessions = {"profile": ("fingerprint", session)}
+        self.sessions.read_metadata = lambda: {"chat": {"personaId": "profile"}}
+        for profile_id, status in (("other", 409), ("profile", 200)):
+            request = Request("/api/chat/steer", json.dumps({"session_id": "chat", "persona_id": profile_id,
+                "operation_id": "operation", "prompt": "clarification"}).encode())
+            self.chat_codex.steer_turn(request, service=self.service, sessions=self.sessions, file_access=FileAccess())
+            self.assertEqual(request.status, status)
+        session.steer.assert_called_once_with("chat", "operation", "clarification", [], [])
+        self.service.get.assert_not_called()
 
     def test_unexpected_error_is_sanitized_without_api_fallback(self):
         self.service.get.return_value.run.side_effect = RuntimeError("fixture-private-error")

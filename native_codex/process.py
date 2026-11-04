@@ -28,7 +28,7 @@ def metadata(root, verify_hashes=True):
         python_dll = saved.get("python_dll", "python312.dll")
         if not isinstance(python_dll, str) or not re.fullmatch(r"python3\d{1,2}\.dll", python_dll):
             raise ValueError()
-        for name in ("codex.exe", "network-probe.exe", python_dll):
+        for name in ("codex.exe", "network-probe.exe", "codex-code-mode-host.exe", python_dll):
             target = directory / name
             if target.is_symlink() or target.is_junction():
                 raise ValueError()

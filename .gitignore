@@ -27,3 +27,12 @@ tsconfig.tsbuildinfo
 
 # Личные данные хранятся в AppData; старые локальные копии тоже исключаем.
 data/
+
+# Installer output and recoverable failed attempts
+dist/
+.runtime/
+.install.lock
+.install-state.json*
+.release.json
+.venv.failed-*/
+UI/.next.failed-*/

@@ -59,7 +59,7 @@ def ensure(root, profile_id, profile):
     with _lock:
         try:
             try:
-                metadata(root, verify_hashes=False)
+                metadata(root)
             except ProtectionUnavailable:
                 from scripts.prepare_native_codex import prepare
                 prepare(profile_id, root)

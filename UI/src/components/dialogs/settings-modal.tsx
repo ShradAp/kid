@@ -40,6 +40,7 @@ import { Switch } from "@/components/ui/switch";
 import { setFileClickMode } from "@/lib/file-actions";
 import { TelegramSettings } from "@/components/dialogs/telegram-settings";
 import { ExtensionsSettings } from "@/components/dialogs/extensions-settings";
+import { UpdateSettings } from "@/components/dialogs/update-settings";
 
 const FONT_SIZE_LABELS = ["Small", "Medium", "Large", "Extra Large"];
 
@@ -417,6 +418,9 @@ export function SettingsModal({
         </DialogHeader>
 
         <div className="flex flex-col gap-2">
+          <SettingsSection id="updates" title="Обновления" icon={<Archive className="size-4 text-muted-foreground" />} open={openSection === "updates"} onToggle={setOpenSection}>
+            <UpdateSettings />
+          </SettingsSection>
           <SettingsSection id="extensions" title="Расширения" icon={<Wrench className="size-4 text-muted-foreground" />}
             open={openSection === "extensions"} onToggle={setOpenSection}>
             {openSection === "extensions" && open && <ExtensionsSettings />}

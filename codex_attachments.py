@@ -47,15 +47,27 @@ def prepare_attachments(attachments, access, profile, upload_dir=None):
                 inputs.append({"type": "localImage", "path": str(path)})
             except Exception:
                 raise ProtocolError("Не удалось прочитать изображение") from None
-        elif suffix in DOC_EXT:
-            text, _, error = read_document(str(path), max_text_chars=min(60000, remaining))
-            if error or not text or remaining <= 0:
-                raise ProtocolError("Не удалось прочитать документ или превышен лимит текста")
-            text = text[:remaining]
-            remaining -= len(text)
-            inputs.append({"type": "text", "text": f"Вложение: {name}\n{text}"})
         else:
-            raise ProtocolError("Этот формат вложения не поддерживается Codex")
+            # App Server accepts text and localImage, not arbitrary file blobs.
+            # Give the agent the original path so its tools can inspect/edit any
+            # format, including files that our optional text extractor cannot read.
+            context = (
+                f"Вложение: {name}\nЛокальный путь на ПК: {path}\n"
+                "Исходный файл доступен для чтения и обработки локальными инструментами. "
+                "Используй windows_command для чтения или редактирования файла на ПК. "
+                "Выбирай способ чтения по содержимому и формату, а не только расширению. "
+                "Если предпросмотра нет или он неполный, прочитай оригинал инструментами. "
+                "Не утверждай, что прочитал файл, до получения его содержимого.\n"
+            )
+            if suffix in DOC_EXT and remaining > 0:
+                text, _, error = read_document(str(path), max_text_chars=min(60000, remaining))
+                if not error and text:
+                    text = text[:min(60000, remaining)]
+                    remaining -= len(text)
+                    context += "Предпросмотр содержимого (может быть неполным):\n" + text
+                else:
+                    context += "Предпросмотр недоступен; прочитай исходный файл инструментами."
+            inputs.append({"type": "text", "text": context})
         history.append({"name": name, "url": "/api/download-local?path=" + quote(str(path), safe=""),
                         "isImage": suffix in IMAGE_EXT, "isVideo": False})
     return inputs, history

@@ -307,7 +307,8 @@ class ExtensionTests(unittest.TestCase):
         def rpc(method, params=None, **kwargs):
             calls.append((method, copy.deepcopy(params)))
             if method == "config/read":
-                return {"config": {"mcp_servers": {"unselected_global": {"command": "forbidden"}}, "plugins": {"global_plugin": {"enabled": True}}}}
+                return {"config": {"mcp_servers": {"kid_skills": {"enabled": True},
+                    "unselected_global": {"command": "forbidden"}}, "plugins": {"global_plugin": {"enabled": True}}}}
             if method == "skills/list":
                 return {"data": [{"skills": [{"path": str(self.root / "GLOBAL_SKILL.md")}]}]}
             if method in ("thread/start", "thread/resume", "thread/fork"):
@@ -338,6 +339,12 @@ class ExtensionTests(unittest.TestCase):
         self.assertNotIn('"name": "first"', threads[1]["developerInstructions"])
         self.assertEqual(threads[1]["threadId"], "thread-1")
         self.assertIn('"name": "second"', threads[2]["developerInstructions"])
+        for arguments in threads:
+            skills_server = arguments["config"]["mcp_servers"]["kid_skills"]
+            self.assertTrue(skills_server["enabled"])
+            snapshot = json.loads(Path(skills_server["args"][-1]).read_text(encoding="utf-8"))
+            self.assertEqual(snapshot["errors"], [])
+            self.assertTrue(snapshot["skills"])
         self.assertEqual(threads[0]["config"]["mcp_servers"]["unselected_global"], {"enabled": False})
         self.assertEqual(threads[0]["config"]["plugins"]["global_plugin"], {"enabled": False})
         self.assertFalse(threads[0]["config"]["skills"]["config"][0]["enabled"])
@@ -354,6 +361,22 @@ class ExtensionTests(unittest.TestCase):
         self.assertEqual(request.status, 200)
         self.assertEqual(self.cfg["profiles"]["a"]["extension_ids"], [item["id"]])
         self.assertNotIn("extension_ids", self.cfg["profiles"]["b"])
+
+    def test_selected_mcp_in_effective_config_is_reregistered_without_collision(self):
+        item = self.install(self.mcp(), "mcp")
+        self.api({"action": "probe", "id": item["id"]})
+        self.cfg["profiles"]["a"]["extension_ids"] = [item["id"]]
+        self.save(self.cfg)
+        session = ProfileSession("a", {"codex": {"proxy": "http://127.0.0.1:1"}}, self.data,
+                                 LimitsCache(self.data), ApprovalQueue())
+        session.runtime.tool_port = 1234
+        server = "ext_" + item["id"] + "_echo"
+        session.rpc = Mock(side_effect=lambda method, params: {"config": {"mcp_servers": {
+            server: {"enabled": True}}}} if method == "config/read" else {})
+        arguments = session.thread_arguments("chat")
+        self.assertTrue(arguments["config"]["mcp_servers"][server]["enabled"])
+        snapshot = json.loads(Path(session.extension_snapshots["chat"]).read_text(encoding="utf-8"))
+        self.assertEqual(snapshot["errors"], [])
 
     def test_broken_mcp_timeout_returns_error_without_stalling_other_extensions(self):
         broken = self.root / "broken.py"

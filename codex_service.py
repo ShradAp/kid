@@ -131,6 +131,7 @@ class ProfileSession:
         self.limits, self.approvals = limits, approvals
         self.connection = None
         self.start_lock = threading.RLock()
+        self.starting = threading.Event()
         self.lock = threading.RLock()
         self.closed = threading.Event()
         self.models, self.account, self.login = [], None, None
@@ -169,14 +170,18 @@ class ProfileSession:
     def start(self):
         # Retry only connection setup, before any user turn can be submitted.
         with self.start_lock:
-            for attempt in range(2):
-                try:
-                    self._start_once()
-                    return
-                except CodexBlocked as error:
-                    if attempt or isinstance(error.__cause__, IsolationUnavailable):
-                        raise
-                    time.sleep(.5)
+            self.starting.set()
+            try:
+                for attempt in range(2):
+                    try:
+                        self._start_once()
+                        return
+                    except CodexBlocked as error:
+                        if attempt or isinstance(error.__cause__, IsolationUnavailable):
+                            raise
+                        time.sleep(.5)
+            finally:
+                self.starting.clear()
 
     def _start_once(self):
         with self.start_lock:
@@ -216,7 +221,8 @@ class ProfileSession:
                 self.close()
                 if isinstance(error, IsolationUnavailable):
                     raise CodexBlocked(str(error)) from error
-                raise CodexBlocked("Изолированное подключение не установлено") from None
+                reason = error.reason if isinstance(error, ProxyUnavailable) else "Изолированное подключение не установлено"
+                raise CodexBlocked(reason) from error
 
     @property
     def authenticated(self):
@@ -418,6 +424,26 @@ class ProfileSession:
         finally:
             serial.release()
 
+    def steer(self, session_id, operation_id, prompt, input_items=None, attachments=None):
+        # Reuse the verified stdio transport. Never create another runtime or
+        # replay an uncertain steer through a new turn.
+        with self.lock:
+            target = next(((thread, active) for thread, active in self.active.items()
+                           if active["session_id"] == session_id), None)
+        if target is None:
+            raise ProtocolError("Текущий ответ уже завершён. Отправьте отдельное сообщение")
+        thread_id, active = target
+        with active["steer_lock"]:
+            if (active["operation_id"] != operation_id or not active.get("turn_id")
+                    or active["done"].is_set() or active["cancel"].is_set()):
+                raise ProtocolError("Этот ход ещё не готов к уточнению или уже завершён")
+            response = self.rpc("turn/steer", {"threadId": thread_id,
+                "expectedTurnId": active["turn_id"],
+                "input": [{"type": "text", "text": prompt}] + list(input_items or [])})
+            active["steers"].append({"role": "user", "content": prompt,
+                                     "attachments": attachments or []})
+            return response
+
     def thread_arguments(self, session_id, refresh_extensions=True):
         memory_instructions = (
             "\n\nUse kid's persistent user profile memory across conversations. "
@@ -516,7 +542,11 @@ class ProfileSession:
         # Suppress implicit Codex catalogs so only kid's profile selection is exposed.
         effective = self.rpc("config/read", {"cwd": arguments["cwd"], "includeLayers": False}).get("config", {})
         for name in sorted((effective.get("mcp_servers") or {})):
-            if name != "kid":
+            # Selected servers are registered below. A disabled placeholder
+            # here would be mistaken for a collision by attach(), leaving the
+            # old catalog (or no catalog) on resumed/forked threads.
+            selected = name in value["mcp_servers"] or (name == "kid_skills" and bool(value["skills"]))
+            if name != "kid" and not selected:
                 arguments["config"]["mcp_servers"][name] = {"enabled": False}
         arguments["config"]["plugins"] = {name: {"enabled": False} for name in sorted(effective.get("plugins") or {})}
         discovered = self.rpc("skills/list", {"cwds": [arguments["cwd"]], "forceReload": True})
@@ -607,6 +637,7 @@ class ProfileSession:
         active = {"session_id": session_id, "cancel": cancel, "done": threading.Event(), "text": [],
                   "reasoning": [], "steps": [], "turn": {}, "on_step": on_step, "on_text": on_text, "item_count": 0,
                   "operation_id": operation_id, "model_calls": 0, "refresh_notes": False,
+                  "steer_lock": threading.Lock(), "steers": [],
                   "turn_id": None, "pending_events": []}
         with self.lock:
             if thread_id in self.active:
@@ -654,7 +685,11 @@ class ProfileSession:
                 if status == "failed":
                     binding["status"] = "failed"
                 raise ProtocolError("Ход Codex завершился ошибкой; выполненные действия не повторяются")
+            # Finish any acknowledged in-flight steer before persisting history.
+            with active["steer_lock"]:
+                steers = list(active["steers"])
             result = {"reply": self.sanitize("".join(active["text"])), "thinking": active["steps"],
+                      "steers": steers,
                       "images": active.get("images", []),
                       "activity": {"duration_ms": round((time.monotonic() - started_at) * 1000), "status":status},
                       "reasoning": self.sanitize("".join(active["reasoning"])), "cancelled": status == "interrupted",
@@ -934,12 +969,16 @@ class CodexService:
                     raise ValueError()
             except (ValueError, OSError):
                 raise CodexBlocked("Повторно выберите рабочую папку системным диалогом") from None
-        # Extension changes are applied per chat after an explicit idle restart.
+        # Extension changes are applied by thread_arguments on the next turn.
         # Polling status must never close a runtime just because checkboxes changed.
         fingerprint = hashlib.sha256(json.dumps({key: value for key, value in profile.items() if key != "extension_ids"},
                                                sort_keys=True, ensure_ascii=False).encode()).hexdigest()
         with self.lock:
             saved = self.sessions.get(profile_id)
+            # Status polling can observe close/recreate between setup attempts.
+            # Keep the owner alive until start() finishes; chat waits on its lock.
+            if saved and saved[0] == fingerprint and saved[1].starting.is_set():
+                return saved[1]
             if (saved and saved[0] == fingerprint and not saved[1].closed.is_set()
                     and not saved[1].runtime.stopped.is_set()
                     and (saved[1].connection is None or not saved[1].connection.closed)):
@@ -957,17 +996,19 @@ class CodexService:
             # Missing settings/image may be reported without starting a worker
             # or probing the Internet. Runtime verification happens at start.
             saved = self.sessions.get(profile_id)
-            if saved and saved[1].connection is not None and (saved[1].runtime.stopped.is_set() or saved[1].connection.closed):
+            if saved and not saved[1].starting.is_set() and saved[1].connection is not None and (saved[1].runtime.stopped.is_set() or saved[1].connection.closed):
                 self.errors.pop(profile_id, None)
             session = self.get(profile_id, profile)
             session.runtime.image_metadata()
-            alive = session.connection is not None and not session.connection.closed and not session.runtime.stopped.is_set()
+            connecting = session.starting.is_set()
+            alive = not connecting and session.connection is not None and not session.connection.closed and not session.runtime.stopped.is_set()
             if alive:
                 self.errors.pop(profile_id, None)
-            elif profile_id in self.errors:
+            elif not connecting and profile_id in self.errors:
                 raise CodexBlocked()
             return {"engine": "codex", "available": True, "proxy_state": "verified" if alive else "not_checked",
-                    "error": "", "reason": "Только изолированный запуск; прямой маршрут отсутствует",
+                    "connecting": connecting,
+                    "error": "", "reason": "Автоматическое подключение через прокси…" if connecting else "Только изолированный запуск; прямой маршрут отсутствует",
                     "auth_state": "authenticated" if session.authenticated else "login_pending" if session.login else "not_authenticated" if alive else "not_checked",
                     "login": copy.deepcopy(session.login), "exit_ip": session.exit_ip,
                     "models": copy.deepcopy(session.models), "isolation": session.runtime.report,
@@ -976,11 +1017,13 @@ class CodexService:
                                      "tools": True, "search": True,
                                      "commands": True, "general_windows_commands": bool(getattr(session.runtime, "native", False)),
                                      "file_changes": bool(session.options["workspace"])}}
-        except (IsolationUnavailable, ProxyUnavailable, CodexBlocked):
+        except (IsolationUnavailable, ProxyUnavailable, CodexBlocked) as error:
             from codex_engine import status
             result = status(profile_id, profile, self.limits)
             if profile_id in self.errors:
                 result["reason"] = self.errors[profile_id]
+            elif isinstance(error, (ProxyUnavailable, CodexBlocked)):
+                result["reason"] = error.reason
             return result
 
     def action(self, profile_id, profile, action):
@@ -998,9 +1041,12 @@ class CodexService:
                 session.refresh_limits()
             return self.status(profile_id, profile)
         except Exception as error:
-            self.errors[profile_id] = (error.reason if isinstance(error, CodexBlocked) else
+            self.errors[profile_id] = (error.reason if isinstance(error, (CodexBlocked, ProxyUnavailable)) else
                                        str(error) if isinstance(error, ProtocolError) else "Защищённое подключение недоступно")
-            return self.status(profile_id, profile)
+            result = self.status(profile_id, profile)
+            result["retryable"] = isinstance(error, ProxyUnavailable) or (
+                isinstance(error, CodexBlocked) and isinstance(error.__cause__, (ProxyUnavailable, ProtocolError, OSError)))
+            return result
 
     def close(self):
         with self.lock:

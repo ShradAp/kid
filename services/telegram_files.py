@@ -43,15 +43,10 @@ class TelegramFiles:
         return inputs, details
 
     def prepare(self, destination, name, profile):
-        from attach_tools import IMAGE_EXT, DOC_EXT
         from bridge_security import FileAccess
         from codex_attachments import prepare_attachments
-        inputs = [{"type": "text", "text": f"Получен файл пользователя: {name}\nЛокальный путь на ПК: {destination}"}]
-        if destination.suffix.lower() in IMAGE_EXT + DOC_EXT:
-            prepared, _ = prepare_attachments([{"path": str(destination), "name": name}], FileAccess((self.incoming,)), profile)
-            inputs.extend(prepared)
-        else:
-            inputs.append({"type": "text", "text": "Автоматическое извлечение содержимого этого формата не поддерживается. Файл сохранён; не утверждай, что прочитал его. Не запускай полученные файлы."})
+        inputs, _ = prepare_attachments(
+            [{"path": str(destination), "name": name}], FileAccess((self.incoming,)), profile)
         return inputs, {"name": name, "path": str(destination), "size": destination.stat().st_size}
 
     def source(self, path):

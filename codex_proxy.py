@@ -26,7 +26,7 @@ def global_endpoint(directory, configuration=None):
             (Path(directory) / "config.json").read_text(encoding="utf-8"))
         mode = cfg.get("proxy_mode", "auto")
         if mode == "direct":
-            raise ValueError()
+            raise ProxyUnavailable("В общих настройках выбран прямой режим. Выберите и сохраните прокси для Codex.")
         if mode == "auto":
             proxies = getproxies()
             address = proxies.get("https") or proxies.get("http") or ""
@@ -36,20 +36,29 @@ def global_endpoint(directory, configuration=None):
             username, password = cfg.get("proxy_user") or "", cfg.get("proxy_pass") or ""
         else:
             raise ValueError()
+        if not address.strip():
+            raise ProxyUnavailable("Прокси не задан. Сохраните адрес в общих настройках → Прокси; в режиме Авто нужен системный прокси.")
         if "://" not in address:
             address = "http://" + address
         parsed = urlsplit(address)
         scheme = "socks5h" if parsed.scheme == "socks5" else parsed.scheme
         from urllib.parse import quote
         host = parsed.hostname or ""
+        if host != "localhost":
+            try:
+                ipaddress.ip_address(host)
+            except ValueError:
+                raise ProxyUnavailable("Для Codex нужен IP-адрес прокси, а не доменное имя. Укажите IP и порт в общих настройках → Прокси.") from None
         authority = f"[{host}]" if ":" in host else host
         login = username or unquote(parsed.username or "")
         secret = password or unquote(parsed.password or "")
         if parsed.path not in ("", "/") or parsed.query or parsed.fragment:
             raise ValueError()
         return ProxyEndpoint.parse(f"{scheme}://{quote(login, safe='')}@{authority}:{parsed.port}", secret)
+    except ProxyUnavailable:
+        raise
     except Exception:
-        raise ProxyUnavailable() from None
+        raise ProxyUnavailable("Некорректные настройки прокси. Проверьте тип (HTTP/HTTPS/SOCKS5), IP-адрес и порт в общих настройках.") from None
 
 
 def effective_profile(profile, directory):
@@ -66,8 +75,9 @@ def effective_profile(profile, directory):
 
 
 class ProxyUnavailable(RuntimeError):
-    def __init__(self):
+    def __init__(self, reason="Не удалось подключиться через прокси. Проверьте доступность сервера, тип прокси, порт, логин и пароль."):
         super().__init__("Прокси недоступен. Запрос Codex заблокирован")
+        self.reason = reason
 
 
 @dataclass(frozen=True)

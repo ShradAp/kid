@@ -17,6 +17,7 @@ import sys
 import tarfile
 import traceback
 import struct
+import tempfile
 from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -30,6 +31,34 @@ from native_codex.process import metadata
 from native_codex.wfp import ProtectionUnavailable, describe, diagnose, install, verify
 from native_codex.probe import verify_transports
 from scripts.prepare_codex_runtime import private_endpoint
+
+
+def verified_archive(cache, integrity, download):
+    """Never let an interrupted or corrupt cached download poison every retry."""
+    expected = base64.b64decode(integrity.split('-', 1)[1], validate=True)
+    if cache.is_file():
+        archive = cache.read_bytes()
+        if hashlib.sha512(archive).digest() == expected:
+            return archive
+    archive = download()
+    if hashlib.sha512(archive).digest() != expected:
+        raise ProtectionUnavailable('Контрольная сумма Windows-пакета не совпала')
+    atomic_write(cache, archive)
+    return archive
+
+
+def atomic_write(path, content):
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=path.parent, prefix=path.name + '.', suffix='.tmp', delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def prepare(profile_id, directory=USER_DATA_DIR):
@@ -52,12 +81,8 @@ def prepare(profile_id, directory=USER_DATA_DIR):
     target = Path(directory) / "codex_native"
     target.mkdir(parents=True, exist_ok=True)
     cache = target / (version + ".tgz")
-    archive = cache.read_bytes() if cache.is_file() else https_get(endpoint, "registry.npmjs.org", url.path, max_bytes=256 * 1024 * 1024, timeout=120)
-    if hashlib.sha512(archive).digest() != base64.b64decode(integrity.split("-", 1)[1], validate=True):
-        raise ProtectionUnavailable("Контрольная сумма Windows-пакета не совпала")
-    if not cache.exists():
-        with cache.open("xb") as stream:
-            stream.write(archive)
+    archive = verified_archive(cache, integrity, lambda: https_get(
+        endpoint, "registry.npmjs.org", url.path, max_bytes=256 * 1024 * 1024, timeout=120))
     payload = None
     code_host = None
     with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as package:
@@ -83,19 +108,16 @@ def prepare(profile_id, directory=USER_DATA_DIR):
     hashes = {name: hashlib.sha256(content).hexdigest() for name, content in files.items()}
     for name, content in files.items():
         path = target / name
-        # Do not replace an executable to which a live process may be bound.
-        if path.exists() and hashlib.sha256(path.read_bytes()).hexdigest() != hashes[name]:
-            raise ProtectionUnavailable("Компоненты уже существуют с другой версией; автоматическая замена запрещена")
-    for name, content in files.items():
-        path = target / name
-        if not path.exists():
-            with path.open("xb") as stream:
-                stream.write(content)
+        if not path.exists() or hashlib.sha256(path.read_bytes()).hexdigest() != hashes[name]:
+            try:
+                # Windows denies replacement of a loaded executable. Keep its
+                # path/persistent WFP policy; no process is ever killed here.
+                atomic_write(path, content)
+            except PermissionError:
+                raise ProtectionUnavailable('Компоненты Codex заняты. Закройте все окна kid через трей и повторите попытку.') from None
     saved = {"version": version, "broker_port": BROKER_PORT, "sha256": hashes,
              "python_home": str(python_home), "python_dll": python_dll, "package_integrity": integrity, "active": False}
-    temporary = target / "runtime.tmp"
-    temporary.write_text(json.dumps(saved, indent=2), encoding="utf-8")
-    temporary.replace(target / "runtime.json")
+    atomic_write(target / 'runtime.json', json.dumps(saved, indent=2).encode('utf-8'))
     return {"prepared": True, "activated": False, "downloads_proxy_only": True, "codex_launched": False}
 
 

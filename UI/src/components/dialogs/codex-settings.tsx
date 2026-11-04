@@ -18,7 +18,7 @@ export function CodexSettings({ profileId, value, onChange }: {
   const model = data?.models.find((item) => item.model === value.model);
   return <FieldGroup>
     <div role="status" className="space-y-3 rounded-xl border border-white/10 bg-white/[0.02] p-3.5 text-sm">
-      <p>{data?.error || (data?.proxy_state === "verified" ? "Защищённый канал Codex подключён" : "Подключите Codex через проверку изоляции и прокси")}</p>
+      <p>{data?.error || (data?.proxy_state === "verified" ? "Защищённый канал Codex подключён" : "Codex подключается через прокси автоматически")}</p>
       <p className="text-xs text-muted-foreground">{data?.reason || "Загрузка локального состояния…"}</p>
       <p className="text-xs">Авторизация: {data?.auth_state === "authenticated" ? "вход выполнен" : data?.auth_state === "login_pending" ? "ожидается подтверждение" : data?.auth_state === "not_authenticated" ? "вход не выполнен" : "не проверена"}.</p>
       {data?.auth_state === "authenticated" && <p className="text-xs text-muted-foreground">Аккаунт сохранён. При следующем запуске kid подключится автоматически.</p>}
@@ -29,9 +29,10 @@ export function CodexSettings({ profileId, value, onChange }: {
         <p className="text-xs text-muted-foreground">Подтвердите код на другом устройстве или в браузере с защищённым прокси. kid не открывает браузер компьютера автоматически.</p>
       </div>}
       {failure && <p className="text-xs text-destructive" role="alert">{failure}</p>}
+      {busy && <p className="text-xs" aria-live="polite">Подключение: проверка прокси и компонентов Codex. При первом запуске дождитесь загрузки и запроса Windows на установку защиты.</p>}
       <div className="flex flex-wrap gap-2">
         {data?.auth_state !== "authenticated" && <Button type="button" size="sm" disabled={!data?.capabilities.login || busy} onClick={() => void refresh("login")}>Войти в ChatGPT</Button>}
-        {data?.proxy_state !== "verified" && <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => void refresh("retry")}>Подключить через прокси</Button>}
+        {data?.proxy_state !== "verified" && <Button type="button" size="sm" variant="outline" disabled={busy || data?.connecting} onClick={() => void refresh("retry")}>{data?.connecting ? "Подключение…" : "Повторить подключение"}</Button>}
         {data?.auth_state === "authenticated" && <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={() => void refresh("logout")}>Выйти</Button>}
       </div>
     </div>

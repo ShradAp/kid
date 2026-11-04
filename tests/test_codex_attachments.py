@@ -33,8 +33,50 @@ class AttachmentTests(unittest.TestCase):
         path.write_text("hello attachment", encoding="utf-8")
         items, _ = prepare_attachments([{"path": str(path)}], self.access, {})
         self.assertIn("hello attachment", items[0]["text"])
+        self.assertIn(str(path), items[0]["text"])
         with self.assertRaises(ProtocolError):
             prepare_attachments([{"path": str(path)}], FileAccess(), {})
+
+    def test_arbitrary_formats_preserve_original_bytes_and_pass_readable_paths(self):
+        for name, content in (("схема.drawio", b'<mxfile><diagram>compressed-data</diagram></mxfile>'),
+                              ("drawing.svg", b'<svg xmlns="http://www.w3.org/2000/svg"/>'),
+                              ("source.tsx", b"export const App = () => null;"),
+                              ("archive.zip", b"PK\x03\x04\x00\xff"), ("LICENSE", b"license")):
+            for uploaded in (False, True):
+                with self.subTest(name=name, uploaded=uploaded):
+                    identifier = uuid.uuid4().hex
+                    path = self.root / ((identifier + "_" if uploaded else "") + name)
+                    path.write_bytes(content)
+                    attachment = {"name": name, **({"file_id": identifier} if uploaded else {"path": str(path)})}
+                    items, history = prepare_attachments([attachment], self.access, {}, self.root)
+                    self.assertEqual(items[0]["type"], "text")
+                    self.assertIn(str(path), items[0]["text"])
+                    self.assertIn("windows_command", items[0]["text"])
+                    self.assertEqual(path.read_bytes(), content)
+                    self.assertEqual(history[0]["name"], name)
+                    self.assertFalse(history[0]["isImage"])
+                    with self.assertRaises(ProtocolError):
+                        prepare_attachments([attachment], FileAccess(), {}, self.root)
+
+    def test_failed_or_empty_preview_keeps_original_available(self):
+        for content, error in (("", "parser unavailable"), ("", None)):
+            with self.subTest(error=error):
+                path = self.root / "document.pdf"
+                path.write_bytes(b"original")
+                with patch("attach_tools.read_document", return_value=(content, 0, error)):
+                    items, _ = prepare_attachments([{"path": str(path)}], self.access, {})
+                self.assertIn(str(path), items[0]["text"])
+                self.assertIn("Предпросмотр недоступен", items[0]["text"])
+
+    def test_preview_budget_does_not_block_later_attachments(self):
+        paths = [self.root / f"document{index}.txt" for index in range(4)]
+        for path in paths:
+            path.write_text("x" * 70000, encoding="utf-8")
+        items, history = prepare_attachments([{"path": str(path)} for path in paths], self.access, {})
+        self.assertEqual(len(history), 4)
+        for path, item in zip(paths, items):
+            self.assertIn(str(path), item["text"])
+        self.assertNotIn("x" * 100, items[-1]["text"])
 
     def test_invalid_missing_and_corrupt_files_fail_before_model(self):
         (self.root / "corrupt.png").write_text("not an image")

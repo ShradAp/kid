@@ -88,6 +88,25 @@ with patch.object(app,'load_config',return_value=config), patch.object(app,'CODE
  app._connect_startup_codex()
  service.action.assert_called_once_with('chosen',profile,'refresh')
  service.reset_mock()
+ service.action.side_effect=[{'proxy_state':'blocked','retryable':True},{'proxy_state':'verified'}]
+ with patch.object(app.SHUTTING_DOWN,'wait',return_value=False) as wait:
+  app._connect_startup_codex()
+  assert service.action.call_count == 2
+  wait.assert_called_once_with(3)
+ service.reset_mock()
+ service.action.side_effect=None
+ service.action.return_value={'proxy_state':'blocked','retryable':True}
+ with patch.object(app.SHUTTING_DOWN,'wait',return_value=False) as wait:
+  app._connect_startup_codex()
+  assert service.action.call_count == 3
+  assert [call.args[0] for call in wait.call_args_list] == [3,10]
+ service.reset_mock()
+ service.action.return_value={'proxy_state':'blocked','retryable':False}
+ with patch.object(app.SHUTTING_DOWN,'wait') as wait:
+  app._connect_startup_codex()
+  service.action.assert_called_once()
+  wait.assert_not_called()
+ service.reset_mock()
  profile['engine']='api'
  app._connect_startup_codex()
  service.action.assert_not_called()

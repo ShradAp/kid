@@ -536,7 +536,7 @@ def _activate_existing_window():
 
 
 def _connect_startup_codex():
-    """Одно фоновое подключение выбранного профиля через штатный isolation gate."""
+    """Фоновое подключение с ограниченным повтором временных сетевых сбоев."""
     try:
         selected = load_config()
         profile_id = selected.get("active_profile", "main")
@@ -544,7 +544,21 @@ def _connect_startup_codex():
         if SHUTTING_DOWN.is_set() or codex_engine.engine(profile) != "codex":
             return
         log_event("[CODEX] Автоматическое подключение через прокси…")
-        result = CODEX_SERVICE.action(profile_id, profile, "refresh")
+        for attempt in range(3):
+            if SHUTTING_DOWN.is_set():
+                return
+            current = load_config()
+            if current.get("active_profile", "main") != profile_id:
+                return
+            profile = (current.get("profiles") or {}).get(profile_id, {})
+            if codex_engine.engine(profile) != "codex":
+                return
+            result = CODEX_SERVICE.action(profile_id, profile, "refresh")
+            if result.get("proxy_state") == "verified" or not result.get("retryable") or attempt == 2:
+                break
+            log_event("[CODEX] Временный сбой подключения; повторяю автоматически…")
+            if SHUTTING_DOWN.wait((3, 10)[attempt]):
+                return
         log_event("[CODEX] Защищённый канал подключён" if result.get("proxy_state") == "verified"
                   else "[CODEX] Прокси недоступен. Запрос Codex заблокирован")
     except Exception:

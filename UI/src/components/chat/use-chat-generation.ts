@@ -1,9 +1,11 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import type { Attachment } from "@/components/chat/input-deck";
-import type { Message, AssistantStatus } from "@/lib/assistant-data";
+import type { Message, AssistantStatus, Persona } from "@/lib/assistant-data";
+import { ChatRequestQueue } from "@/lib/chat-request-queue";
+import { playChatSound, unlockChatSound } from "@/lib/chat-notifications";
 import { uploadAttachments } from "@/components/chat/attachment-upload";
 import type { useChatSessions } from "@/components/chat/use-chat-sessions";
 import type { useNotes } from "@/components/panels/use-notes";
@@ -13,10 +15,13 @@ type GenerationDependencies = Pick<ReturnType<typeof useChatSessions>,
 > & Pick<ReturnType<typeof useNotes>, "handleAddNote" | "setNotes"> & {
   logsOpen: boolean;
   fetchLogs: () => void;
+  chatVisible?: boolean;
 };
 
+type PendingRequest = { id: string; text: string; attachments: Attachment[]; persona: Persona };
+
 export function useChatGeneration({
-  activePersona, activeSessionId, personas, setMessagesBySession, setSessions, stateMutationRef, persistSession, setBalance, refreshBalance, handleAddNote, setNotes, logsOpen, fetchLogs
+  activePersona, activeSessionId, personas, setMessagesBySession, setSessions, stateMutationRef, persistSession, setBalance, refreshBalance, handleAddNote, setNotes, logsOpen, fetchLogs, chatVisible = true
 }: GenerationDependencies) {
   const [liveReplyBySession, setLiveReplyBySession] = useState<Record<string, string>>({});
   // Ввод и вложения хранятся ПО СЕССИИ, чтобы текст в поле не перетекал между чатами.
@@ -24,12 +29,49 @@ export function useChatGeneration({
   const [attachmentsBySession, setAttachmentsBySession] = useState<
     Record<string, Attachment[]>
   >({});
-  const [status, setStatus] = useState<AssistantStatus>("ready");
   // Генерация отслеживается ПО СЕССИИ: можно отправить запрос в одном чате и,
   // пока он думает, отправить другой запрос в соседнем чате.
   const [generatingBySession, setGeneratingBySession] = useState<
     Record<string, boolean>
   >({});
+  const activeSessionRef = useRef(activeSessionId);
+  activeSessionRef.current = activeSessionId;
+  const visibleRef = useRef(chatVisible);
+  visibleRef.current = chatVisible;
+  const personasRef = useRef(personas);
+  personasRef.current = personas;
+  const [unreadBySession, setUnreadBySession] = useState<Record<string, boolean>>({});
+  const [steeringBySession, setSteeringBySession] = useState<Record<string, boolean>>({});
+  const steerPending = useRef<Partial<Record<string, Promise<void>>>>({});
+  const runRef = useRef<(sessionId: string, request: PendingRequest) => Promise<boolean>>(async () => false);
+  const [requestQueue] = useState<ChatRequestQueue<PendingRequest>>(() => new ChatRequestQueue<PendingRequest>(
+    (sid, job) => runRef.current(sid, job),
+    () => setGeneratingBySession(Object.fromEntries(requestQueue.running().map((sid) => [sid, true]))),
+  ));
+  useEffect(() => {
+    try {
+      const saved: unknown = JSON.parse(localStorage.getItem("kid-unread-chats") || "{}");
+      if (saved && typeof saved === "object" && !Array.isArray(saved)) {
+        setUnreadBySession(Object.fromEntries(Object.entries(saved).filter(([, value]) => value === true)));
+      }
+    } catch {}
+  }, []);
+  useEffect(() => {
+    try { localStorage.setItem("kid-unread-chats", JSON.stringify(unreadBySession)); } catch {}
+  }, [unreadBySession]);
+  useEffect(() => {
+    const markRead = () => {
+      if (!visibleRef.current || document.visibilityState === "hidden" || !document.hasFocus()) return;
+      setUnreadBySession((prev) => {
+        if (!prev[activeSessionRef.current]) return prev;
+        const next = { ...prev }; delete next[activeSessionRef.current]; return next;
+      });
+    };
+    markRead();
+    window.addEventListener("focus", markRead);
+    document.addEventListener("visibilitychange", markRead);
+    return () => { window.removeEventListener("focus", markRead); document.removeEventListener("visibilitychange", markRead); };
+  }, [activeSessionId, chatVisible]);
   // Живой прогресс генерации (GET /api/progress): вызовы инструментов
   // отображаются в реальном времени, пока /api/chat ещё не ответил.
   const [liveThinkingBySession, setLiveThinkingBySession] = useState<
@@ -42,7 +84,7 @@ export function useChatGeneration({
   // Активные запросы /api/chat по сессиям: контроллер отмены + сессия старта.
   // Нужны кнопке «стоп», чтобы разорвать ждущий fetch конкретного чата.
   const chatAbortsRef = useRef<
-    Record<string, { controller: AbortController; sessionId: string }>
+    Record<string, { controller: AbortController; sessionId: string; operationId: string; personaId: string }>
   >({});
   // Ввод, вложения, статус генерации и живой прогресс берутся по активной сессии.
   const input = inputsBySession[activeSessionId] ?? "";
@@ -128,26 +170,40 @@ export function useChatGeneration({
     progressTimersRef.current[sessionId] = window.setInterval(poll, 1000);
     void poll();
   }
-  async function handleSend() {
-    // Повторная отправка во время генерации невозможна: кнопка «стоп»
-    // не должна превращаться в «отправить», а Enter уже блокирован в InputDeck.
-    if (isGenerating) return;
-    const sessionId = activeSessionId;
+  function handleSend() {
+    if (!input.trim() && attachments.length === 0) return;
+    if (!activePersona) { toast.error("Профили ещё не загружены"); return; }
+    unlockChatSound();
+    const job = { id: crypto.randomUUID(), text: input, attachments, persona: activePersona };
+    setInputsBySession((prev) => ({ ...prev, [activeSessionId]: "" }));
+    setAttachmentsBySession((prev) => ({ ...prev, [activeSessionId]: [] }));
+    requestQueue.enqueue(activeSessionId, job);
+  }
+
+  async function sendRequest(sessionId: string, job: PendingRequest): Promise<boolean> {
+    const activePersona = personasRef.current.find((persona) => persona.id === job.persona.id);
+    if (!activePersona) { toast.error("Профиль запроса удалён"); return false; }
     // Фиксируем ввод/вложения на момент отправки: даже если пользователь
     // переключится на другой чат во время загрузки файлов, текст уйдёт в нужную сессию.
-    const sessionInput = input;
-    const sessionAttachments = attachments;
-    if (!sessionInput.trim() && sessionAttachments.length === 0) return;
+    const sessionInput = job.text;
+    const sessionAttachments = job.attachments;
+    if (!sessionInput.trim() && sessionAttachments.length === 0) return false;
     // Профили обязаны быть загружены: без них нет ни модели, ни ключа,
     // ни системного промпта — запрос ушёл бы «в никуда».
     if (personas.length === 0) {
       toast.error("Профили ещё не загружены — подождите пару секунд");
-      return;
+      return false;
     }
+    const chatController = new AbortController();
+    chatAbortsRef.current[sessionId] = { controller: chatController, sessionId, operationId: job.id, personaId: activePersona.id };
     // The chat endpoint restores the protected connection before submitting a
     // turn. A cached status must not prevent that reconnect from ever running.
     const { accumulatedFilesPrefix, payloadAttachments, sentAttachments } =
       await uploadAttachments(sessionAttachments, activePersona);
+    if (chatController.signal.aborted) {
+      if (chatAbortsRef.current[sessionId]?.controller === chatController) delete chatAbortsRef.current[sessionId];
+      return false;
+    }
     const filesNamesText = sessionAttachments.map((a) => a.name).join(", ");
     const displayText =
       sessionInput.trim() ||
@@ -171,14 +227,9 @@ export function useChatGeneration({
       ...prev,
       [sessionId]: [...(prev[sessionId] ?? []), userMessage],
     }));
-    setInputsBySession((prev) => ({ ...prev, [sessionId]: "" }));
-    setAttachmentsBySession((prev) => ({ ...prev, [sessionId]: [] }));
     setGeneratingBySession((prev) => ({ ...prev, [sessionId]: true }));
-    setStatus("thinking");
     startProgressPolling(sessionId);
     // Контроллер отмены: кнопка «стоп» разорвёт этот fetch и сообщит бэкенду.
-    const chatController = new AbortController();
-    chatAbortsRef.current[sessionId] = { controller: chatController, sessionId };
     // Финальный ответ (или ошибка) ВСЕГДА попадает в ленту активного чата:
     // ни при каком сбое сообщение не должно молча исчезнуть.
     let assistantPushed = false;
@@ -219,7 +270,7 @@ export function useChatGeneration({
         .trim()
         .slice(0, 48);
       const payload: any = {
-        operation_id: crypto.randomUUID(),
+        operation_id: job.id,
         session_id: sessionId,
         prompt: finalPromptForBackend,
         persona_id: activePersona.id,
@@ -249,7 +300,7 @@ export function useChatGeneration({
       // Читаем тело текстом: даже частично битый JSON не должен терять ответ.
       const rawBody = await res.text();
       // Пользователь нажал «стоп», пока мы ждали тело — ответ не показываем.
-      if (chatController.signal.aborted) return;
+      if (chatController.signal.aborted) return false;
       let data: any = {};
       try {
         data = rawBody ? JSON.parse(rawBody) : {};
@@ -263,6 +314,8 @@ export function useChatGeneration({
             : `HTTP ${res.status}`,
         );
       }
+      await steerPending.current[sessionId];
+      if (chatController.signal.aborted) return false;
       if (typeof data.balance === "number") {
         setBalance(data.balance);
         balanceReceived = true;
@@ -281,6 +334,13 @@ export function useChatGeneration({
         data.activity,
         Array.isArray(data.images) ? data.images : undefined,
       );
+      stateMutationRef.current += 1;
+      if (!data.cancelled) {
+        playChatSound();
+        if (!visibleRef.current || activeSessionRef.current !== sessionId || document.visibilityState === "hidden" || !document.hasFocus()) {
+          setUnreadBySession((prev) => ({ ...prev, [sessionId]: true }));
+        }
+      }
       // Заметки от ассистента (tool save_note): поддерживаем пачку notes[]
       // и старый формат note, но не добавляем совместимый дубликат дважды.
       const incomingNotes: { title?: unknown; content?: unknown }[] = Array.isArray((data as any).notes)
@@ -307,13 +367,14 @@ export function useChatGeneration({
       }
       if (logsOpen) fetchLogs();
       if (data.refresh_notes) {
-        const notesResponse = await fetch("/api/notes");
-        const notesData = await notesResponse.json();
-        if (Array.isArray(notesData.notes)) setNotes(notesData.notes);
+        void fetch("/api/notes").then((response) => response.json()).then((notesData) => {
+          if (Array.isArray(notesData.notes)) setNotes(notesData.notes);
+        }).catch(() => toast.error("Не удалось обновить список заметок"));
       }
+      return !data.cancelled;
     } catch (err) {
       // «Стоп» — штатная отмена: не пушим ошибку в ленту и не показываем тост.
-      if (chatController.signal.aborted) return;
+      if (chatController.signal.aborted) return false;
       if (activePersona?.engine === "codex" && !assistantPushed) {
         // Потеря HTTP-ответа не должна оставлять живое подтверждение/ход.
         // Отменяем, но не отправляем команду повторно: исход может быть неизвестен.
@@ -327,10 +388,10 @@ export function useChatGeneration({
         pushAssistant(`⚠️ **Не удалось получить ответ:** ${message}`);
       }
       toast.error(message);
+      return false;
     } finally {
       stopProgressPolling(sessionId);
       setGeneratingBySession((prev) => ({ ...prev, [sessionId]: false }));
-      setStatus("ready");
       // Баланс обязан обновиться после КАЖДОГО ответа модели (в т.ч. в режиме
       // ассистента): значение из ответа уже применено, а если его в теле не было
       // (сбой сборки, ошибка транспорта) — подтягиваем актуальный с бэкенда.
@@ -339,8 +400,59 @@ export function useChatGeneration({
       if (!balanceReceived) void refreshBalance();
     }
   }
+  runRef.current = sendRequest;
+
+  async function handleSteer() {
+    const sessionId = activeSessionId;
+    const active = chatAbortsRef.current[sessionId];
+    if (!active || steerPending.current[sessionId] || (!input.trim() && !attachments.length)) return;
+    const text = input;
+    const files = attachments;
+    setSteeringBySession((prev) => ({ ...prev, [sessionId]: true }));
+    const task = (async () => {
+      try {
+        const uploaded = await uploadAttachments(files, activePersona);
+        const response = await fetch("/api/chat/steer", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_id: sessionId, persona_id: active.personaId,
+            operation_id: active.operationId, prompt: uploaded.accumulatedFilesPrefix + text,
+            attachments: uploaded.payloadAttachments }),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Уточнение не принято");
+        stateMutationRef.current += 1;
+        setMessagesBySession((prev) => ({ ...prev, [sessionId]: [...(prev[sessionId] ?? []), {
+          id: crypto.randomUUID(), role: "user", content: text || "Прикреплены файлы",
+          timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+          attachments: uploaded.sentAttachments,
+        }] }));
+        setInputsBySession((prev) => ({ ...prev, [sessionId]: prev[sessionId] === text ? "" : prev[sessionId] }));
+        setAttachmentsBySession((prev) => ({ ...prev, [sessionId]: (prev[sessionId] ?? []).filter((file) => !files.includes(file)) }));
+        toast.success("Уточнение передано в текущую задачу");
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "Не удалось подтвердить уточнение. Автоматический повтор не выполняется");
+      } finally {
+        delete steerPending.current[sessionId];
+        setSteeringBySession((prev) => ({ ...prev, [sessionId]: false }));
+      }
+    })();
+    steerPending.current[sessionId] = task;
+    await task;
+  }
+
+  function discardSession(sessionId: string) {
+    requestQueue.clear(sessionId);
+    if (chatAbortsRef.current[sessionId]) {
+      void fetch("/api/stop", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: sessionId }), keepalive: true }).catch(() => undefined);
+    }
+    chatAbortsRef.current[sessionId]?.controller.abort();
+    stopProgressPolling(sessionId);
+    setUnreadBySession((prev) => { const next = { ...prev }; delete next[sessionId]; return next; });
+  }
   function handleStop() {
     const sid = activeSessionId;
+    requestQueue.clear(sid);
     const active = chatAbortsRef.current[sid];
     if (!active) return;
     // 1) Бэкенд: выставляем событие отмены — цикл генерации прервётся между
@@ -356,7 +468,6 @@ export function useChatGeneration({
     delete chatAbortsRef.current[sid];
     stopProgressPolling(sid);
     setGeneratingBySession((prev) => ({ ...prev, [sid]: false }));
-    setStatus("ready");
     // Пометка в ленте той сессии, где шла генерация: ответ остановлен кнопкой.
     const stoppedMessage: Message = {
       id: `m${Date.now()}_stop`,
@@ -373,5 +484,10 @@ export function useChatGeneration({
     }));
   }
 
-  return { input, attachments, status, isGenerating, liveThinking, liveReasoning, liveReplyBySession, setInputsBySession, handleAttachMany, handleRemoveAttachment, handleSend, handleStop };
+  return { input, attachments, status: (isGenerating ? "thinking" : "ready") as AssistantStatus, isGenerating, generatingBySession, unreadBySession,
+    steering: Boolean(steeringBySession[activeSessionId]), canSteer: activePersona?.engine === "codex",
+    pendingRequests: requestQueue.items(activeSessionId),
+    removeQueued: (index: number) => requestQueue.remove(activeSessionId, index),
+    startQueued: () => requestQueue.start(activeSessionId), discardSession,
+    liveThinking, liveReasoning, liveReplyBySession, setInputsBySession, handleAttachMany, handleRemoveAttachment, handleSend, handleSteer, handleStop };
 }

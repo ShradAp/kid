@@ -464,12 +464,8 @@ def pick_files(request, file_access):
         initialdir=get_desktop_dir(),
         title="Выберите файлы для отправки",
         filetypes=[
-            (
-                "Все поддерживаемые",
-                "*.png *.jpg *.jpeg *.webp *.mp4 *.webm *.mov *.mkv *.txt *.py *.md *.json *.pdf *.docx *.xlsx *.csv",
-            ),
-            ("Видео", "*.mp4 *.webm *.mov *.mkv"),
             ("Все файлы", "*.*"),
+            ("Видео", "*.mp4 *.webm *.mov *.mkv"),
         ],
     )
     root.destroy()

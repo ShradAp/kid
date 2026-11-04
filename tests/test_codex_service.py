@@ -101,6 +101,60 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(self.session.run("chat-one", "prompt", "op-one", threading.Event()), result)
         self.assertEqual(len(self.calls), count)
 
+    def test_steer_targets_current_turn_without_interrupt_and_keeps_history(self):
+        original = self.session.rpc.side_effect
+        def request(method, params=None, **kwargs):
+            if method == "turn/start":
+                return {"turn": {"id": "turn-one"}}
+            if method == "turn/steer":
+                self.assertEqual(params["expectedTurnId"], "turn-one")
+                self.assertEqual(params["threadId"], "thread-one")
+                self.assertEqual(params["input"][0]["text"], "clarification")
+                self.session.notify("item/agentMessage/delta", {"threadId": "thread-one", "turnId": "turn-one", "delta": "updated answer"})
+                self.session.notify("turn/completed", {"threadId": "thread-one", "turn": {"id": "turn-one", "status": "completed"}})
+                return {"turnId": "turn-one"}
+            return original(method, params, **kwargs)
+        self.session.rpc.side_effect = request
+        bind = self.session._bind_turn
+        def bind_and_steer(thread_id, active, turn_id):
+            bind(thread_id, active, turn_id)
+            with self.assertRaises(ProtocolError):
+                self.session.steer("other-chat", "op-one", "wrong chat")
+            with self.assertRaises(ProtocolError):
+                self.session.steer("chat-one", "old-operation", "late request")
+            self.session.steer("chat-one", "op-one", "clarification")
+            self.assertFalse(active["cancel"].is_set())
+        with patch.object(self.session, "_bind_turn", side_effect=bind_and_steer):
+            result = self.session.run("chat-one", "prompt", "op-one", threading.Event())
+        self.assertEqual(result["reply"], "updated answer")
+        self.assertEqual(result["steers"], [{"role": "user", "content": "clarification", "attachments": []}])
+        with self.assertRaises(ProtocolError):
+            self.session.steer("chat-one", "op-one", "too late")
+        self.assertFalse(any(call.args[0] == "turn/interrupt" for call in self.session.rpc.call_args_list))
+        self.assertEqual(sum(call.args[0] == "turn/start" for call in self.session.rpc.call_args_list), 1)
+
+    def test_failed_steer_is_not_replayed_or_added_to_history_and_turn_continues(self):
+        active = {"session_id": "chat", "operation_id": "operation", "turn_id": "turn",
+                  "cancel": threading.Event(), "done": threading.Event(),
+                  "steer_lock": threading.Lock(), "steers": []}
+        self.session.active["thread"] = active
+        self.session.rpc.side_effect = ProtocolError("uncertain steer")
+        with self.assertRaises(ProtocolError):
+            self.session.steer("chat", "operation", "clarification")
+        self.session.rpc.assert_called_once()
+        self.assertFalse(active["cancel"].is_set())
+        self.assertEqual(active["steers"], [])
+
+    def test_steer_cannot_submit_when_protected_transport_is_stopped(self):
+        self.session.active["thread"] = {"session_id": "chat", "operation_id": "operation", "turn_id": "turn",
+            "cancel": threading.Event(), "done": threading.Event(), "steer_lock": threading.Lock(), "steers": []}
+        self.session.rpc = ProfileSession.rpc.__get__(self.session)
+        self.session.connection = types.SimpleNamespace(request=Mock(), closed=False)
+        self.session.runtime.stopped.set()
+        with self.assertRaises(CodexBlocked):
+            self.session.steer("chat", "operation", "clarification")
+        self.session.connection.request.assert_not_called()
+
     def test_stale_turn_events_before_and_after_start_response_are_ignored(self):
         original = self.session.rpc.side_effect
         texts = []
@@ -337,6 +391,59 @@ class SessionTests(unittest.TestCase):
             self.assertIs(service.get("one", profile), replacement)
         self.assertTrue(self.session.closed.is_set())
 
+    def test_status_during_setup_retry_does_not_replace_starting_session(self):
+        service = CodexService(self.directory.name)
+        entered, release = threading.Event(), threading.Event()
+        self.session.start = types.MethodType(ProfileSession.start, self.session)
+        self.session.runtime.image_metadata = Mock()
+        errors = []
+        def setup():
+            # State visible while _start_once recreates a failed runtime.
+            self.session.closed.set()
+            self.session.runtime.stopped.set()
+            self.session.connection.closed = True
+            entered.set()
+            if not release.wait(5):
+                raise AssertionError("setup was not released")
+            self.session.closed.clear()
+            self.session.runtime.stopped.clear()
+            self.session.connection.closed = False
+        def start():
+            try:
+                self.session.start()
+            except Exception as error:
+                errors.append(error)
+        with patch("codex_proxy.effective_profile", return_value=self.session.profile), \
+             patch("codex_service.ProfileSession", return_value=self.session) as factory, \
+             patch.object(self.session, "_start_once", side_effect=setup):
+            service.get("one", self.session.profile)
+            worker = threading.Thread(target=start)
+            worker.start()
+            try:
+                self.assertTrue(entered.wait(5))
+                service.errors["one"] = "previous failure"
+                status = service.status("one", self.session.profile)
+                self.assertTrue(status["available"])
+                self.assertTrue(status["connecting"])
+                self.assertEqual(status["proxy_state"], "not_checked")
+                self.assertIs(service.get("one", self.session.profile), self.session)
+                factory.assert_called_once()
+            finally:
+                release.set()
+                worker.join(5)
+        self.assertFalse(errors)
+        self.assertFalse(worker.is_alive())
+        self.assertFalse(self.session.starting.is_set())
+        with patch.object(service, "get", return_value=self.session):
+            self.assertEqual(service.status("one", self.session.profile)["proxy_state"], "verified")
+
+    def test_start_failure_clears_connecting_state(self):
+        with patch.object(self.session, "_start_once", side_effect=CodexBlocked()), \
+             patch("codex_service.time.sleep"):
+            with self.assertRaises(CodexBlocked):
+                ProfileSession.start(self.session)
+        self.assertFalse(self.session.starting.is_set())
+
     def test_successful_connection_clears_old_status_error(self):
         service = CodexService(self.directory.name)
         service.errors["one"] = "temporary proxy failure"
@@ -346,6 +453,22 @@ class SessionTests(unittest.TestCase):
         self.assertTrue(status["available"])
         self.assertEqual(status["proxy_state"], "verified")
         self.assertNotIn("one", service.errors)
+
+    def test_first_connection_preserves_proxy_setup_failure_in_status(self):
+        service = CodexService(self.directory.name)
+        reason = "Не удалось подключиться через прокси"
+        service.bootstrap = Mock(side_effect=ProxyUnavailable(reason))
+        with patch("codex_proxy.effective_profile", side_effect=ProxyUnavailable()):
+            result = service.action("one", self.session.profile, "retry")
+            self.assertFalse(result["available"])
+            self.assertEqual(result["reason"], reason)
+            self.assertEqual(service.status("one", self.session.profile)["reason"], reason)
+
+    def test_status_explains_invalid_proxy_before_a_session_exists(self):
+        service = CodexService(self.directory.name)
+        reason = "Для Codex нужен IP-адрес прокси"
+        with patch("codex_proxy.effective_profile", side_effect=ProxyUnavailable(reason)):
+            self.assertEqual(service.status("one", self.session.profile)["reason"], reason)
 
     def test_concurrent_same_chat_is_rejected_before_rpc(self):
         self.session.session_locks["chat-one"].acquire()

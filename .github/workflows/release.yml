@@ -1,0 +1,50 @@
+name: Windows release
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate stable tag
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF_NAME -notmatch '^v\d+\.\d+\.\d+$') { throw 'Run this workflow on a stable vX.Y.Z tag.' }
+      - name: Clean-machine installation
+        shell: powershell
+        run: ./install.ps1 -ManagedRuntime
+      - name: Installer and updater regression tests
+        shell: powershell
+        run: |
+          ./.venv/Scripts/python.exe -m unittest discover -s tests -p test_updates.py
+          if ($LASTEXITCODE -ne 0) { throw 'Updater tests failed.' }
+          ./.venv/Scripts/python.exe -m unittest discover -s tests -p test_installer.py
+          if ($LASTEXITCODE -ne 0) { throw 'Loader integration tests failed.' }
+          ./tests/test_installer.ps1
+      - name: Build installer and source archive
+        shell: powershell
+        run: |
+          ./scripts/build_installer.ps1
+          git archive --format=zip --output=dist/kid-source.zip HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Source archive failed.' }
+          Get-ChildItem dist/kid-source.zip, dist/kid-setup.exe | ForEach-Object {
+            '{0}  {1}' -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name
+          } | Set-Content -Encoding ASCII dist/SHA256SUMS
+      - name: Publish stable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          gh release view $env:GITHUB_REF_NAME *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $env:GITHUB_REF_NAME --verify-tag --generate-notes --draft
+            if ($LASTEXITCODE -ne 0) { throw 'Release creation failed.' }
+          }
+          gh release upload $env:GITHUB_REF_NAME dist/kid-setup.exe dist/kid-source.zip dist/SHA256SUMS --clobber
+          if ($LASTEXITCODE -ne 0) { throw 'Release upload failed.' }
+          gh release edit $env:GITHUB_REF_NAME --draft=false --latest
+          if ($LASTEXITCODE -ne 0) { throw 'Release publication failed.' }

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Settings, Pin, Trash2, Plus, MessageSquare, PenTool } from "lucide-react";
+import { Settings, Pin, Trash2, Plus, MessageSquare, PenTool, LoaderCircle } from "lucide-react";
 import {
   Sheet,
   SheetContent,
@@ -42,6 +42,8 @@ export function SidebarDrawer({
   onDeleteSession,
   onOpenSettings,
   useProfileAccents = true,
+  generatingBySession = {},
+  unreadBySession = {},
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -59,11 +61,17 @@ export function SidebarDrawer({
   onDeleteSession?: (id: string) => void;
   onOpenSettings: () => void;
   useProfileAccents?: boolean;
+  generatingBySession?: Record<string, boolean>;
+  unreadBySession?: Record<string, boolean>;
 }) {
   const activePersona = personas.find((p) => p.id === activePersonaId);
   const [chatMenuPersonaId, setChatMenuPersonaId] = useState<string | null>(null);
   const [deletePersonaId, setDeletePersonaId] = useState<string | null>(null);
   const chatMenuRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const chatStatus = (id: string) => <span className="inline-flex shrink-0 items-center gap-1.5" role="status">
+    {generatingBySession[id] && <LoaderCircle className="size-3.5 animate-spin text-primary" aria-label="Модель работает" />}
+    {unreadBySession[id] && <span className="size-2 rounded-full bg-primary" aria-label="Непрочитанный ответ" />}
+  </span>;
 
   useEffect(() => {
     if (chatMenuPersonaId === null) return;
@@ -138,7 +146,7 @@ export function SidebarDrawer({
                             }}
                             className="flex w-full flex-col items-start gap-0.5 rounded-sm px-2 py-1.5 text-left text-sm outline-none transition hover:bg-accent hover:text-accent-foreground"
                           >
-                            <span className="w-full truncate font-medium">{session.title}</span>
+                            <span className="flex w-full items-center gap-2"><span className="min-w-0 flex-1 truncate font-medium">{session.title}</span>{chatStatus(session.id)}</span>
                             <span className="w-full truncate text-xs text-muted-foreground">
                               {session.timestamp}
                             </span>
@@ -199,6 +207,7 @@ export function SidebarDrawer({
                     {session.timestamp}
                   </p>
                 </div>
+                {chatStatus(session.id)}
                 <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
                   <span
                     role="button"

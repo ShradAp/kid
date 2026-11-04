@@ -58,6 +58,10 @@ def make_bridge_handler(*, get_bridge_port, file_access, user_data_dir, backup_d
         def do_GET(self):
             if not self._authorized():
                 return
+            if self.path == '/api/updates':
+                from services.updates import handle
+                handle(self, 'GET')
+                return
             if urllib.parse.urlsplit(self.path).path == "/api/extensions":
                 from application.extension_actions import handle
                 handle(self, "GET", root=user_data_dir, load_config=load_config, save_config=save_config, service=codex, sessions=sessions)
@@ -244,6 +248,10 @@ def make_bridge_handler(*, get_bridge_port, file_access, user_data_dir, backup_d
                     pass
 
         def _do_POST(self):
+            if self.path == '/api/updates/install':
+                from services.updates import handle
+                handle(self, 'POST')
+                return
             if self.path == "/api/extensions":
                 from application.extension_actions import handle
                 handle(self, "POST", root=user_data_dir, load_config=load_config, save_config=save_config, service=codex, sessions=sessions)
@@ -386,6 +394,9 @@ def make_bridge_handler(*, get_bridge_port, file_access, user_data_dir, backup_d
                 settings_profiles.generate_prompt(self, load_config, save_config, api_client.call_chat_api)
                 return
 
+            if self.path == "/api/chat/steer":
+                chat_codex.steer_turn(self, service=codex, sessions=sessions, file_access=file_access)
+                return
             if self.path == "/api/chat":
                 content_length = int(self.headers.get("Content-Length", 0))
                 # JSON чата содержит только текст и ID временных файлов.

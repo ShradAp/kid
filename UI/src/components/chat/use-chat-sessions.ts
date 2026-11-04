@@ -238,6 +238,12 @@ export function useChatSessions({ closeDrawer, openProfiles }: { closeDrawer: ()
     }
   }
   function handleSelectSession(id: string) {
+    const session = sessions.find((item) => item.id === id);
+    if (session && session.personaId !== activePersonaId) {
+      setActivePersonaId(session.personaId);
+      void fetch("/api/set_active_profile", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ profile_id: session.personaId }) }).catch(() => undefined);
+    }
     setActiveSessionId(id);
     closeDrawer();
   }

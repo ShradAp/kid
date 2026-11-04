@@ -1,6 +1,7 @@
 """Owned HTTP/Next.js resources and idempotent desktop application shutdown."""
 
 import http.server
+import json
 import os
 import shutil
 import socket
@@ -99,6 +100,12 @@ class ApplicationLifecycle:
             # `npm.cmd run ... shell=True` из pythonw падает с «npm.cmd не распознан».
             # Запускаем Next.js напрямую через node.exe (абсолютный путь, без оболочки).
             node_exe = shutil.which("node.exe")
+            runtime_state = os.path.join(os.path.dirname(self.frontend_dir), '.install-state.json')
+            if os.path.isfile(runtime_state):
+                with open(runtime_state, encoding='utf-8-sig') as stream:
+                    installed = json.load(stream)
+                if installed.get('complete') is True:
+                    node_exe = os.path.join(installed['node'], 'node.exe')
             next_bin = os.path.join(self.frontend_dir, "node_modules", "next", "dist", "bin", "next")
             if not node_exe or not os.path.isfile(next_bin):
                 raise RuntimeError(f"node.exe или Next.js CLI не найдены (node={node_exe!r})")

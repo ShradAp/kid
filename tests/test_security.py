@@ -118,6 +118,8 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(self.request("/api/init", headers={"X-Kid-Token": "\u00e9"})[0], 403)
         self.assertEqual(self.request("/api/init", headers={"Origin": "https://attacker.example"})[0], 403)
         self.assertEqual(self.request("/api/init", headers={"Host": "attacker.example"})[0], 403)
+        self.assertEqual(self.request("/api/chat/steer", method="POST", data={}, authenticated=False)[0], 403)
+        self.assertEqual(self.request("/api/chat/steer", method="POST", data={}, headers={"Origin": "https://attacker.example"})[0], 403)
 
     def test_settings_never_return_saved_keys(self):
         status, headers, body = self.request("/api/init")
@@ -326,7 +328,10 @@ class BridgeTests(unittest.TestCase):
                 for path, method, data in requests:
                     status, _, body = self.request(path, method=method, data=data)
                     self.assertEqual(status, 503, (path, body))
-                    self.assertEqual(json.loads(body)["error"], "Прокси недоступен. Запрос Codex заблокирован")
+                    expected = "Прокси недоступен. Запрос Codex заблокирован"
+                    if path == "/api/chat":
+                        expected += ": В общих настройках выбран прямой режим. Выберите и сохраните прокси для Codex."
+                    self.assertEqual(json.loads(body)["error"], expected)
                     self.assertNotIn(b"private-proxy-password", body)
                 status, _, body = self.request("/api/init")
                 self.assertEqual(status, 200)

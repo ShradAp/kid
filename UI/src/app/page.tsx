@@ -95,8 +95,18 @@ export default function AssistantPage() {
     handleAttachMany,
     handleRemoveAttachment,
     handleSend,
+    handleSteer,
+    generatingBySession,
+    unreadBySession,
+    steering,
+    canSteer,
+    pendingRequests,
+    removeQueued,
+    startQueued,
+    discardSession,
     handleStop,
   } = useChatGeneration({
+    chatVisible: !studioOpen,
     activePersona,
     activeSessionId,
     personas,
@@ -383,8 +393,14 @@ export default function AssistantPage() {
                 setInputsBySession((prev) => ({ ...prev, [activeSessionId]: v }))
               }
               onSend={handleSend}
+              onSteer={handleSteer}
+              steering={steering}
+              canSteer={canSteer}
+              pendingRequests={pendingRequests}
+              onRemoveQueued={removeQueued}
+              onStartQueued={startQueued}
               onStop={handleStop}
-              onClearChat={handleClearChat}
+              onClearChat={() => { discardSession(activeSessionId); handleClearChat(); }}
               isGenerating={isGenerating}
               attachments={attachments}
               onAttachMany={handleAttachMany}
@@ -401,6 +417,8 @@ export default function AssistantPage() {
       </div>
 
       <SidebarDrawer
+        generatingBySession={generatingBySession}
+        unreadBySession={unreadBySession}
         useProfileAccents={!studioOpen}
         open={drawerOpen}
         onOpenChange={setDrawerOpen}
@@ -418,7 +436,7 @@ export default function AssistantPage() {
         activeSessionId={uiActiveSessionId}
         onSelectSession={uiSelectSession}
         onNewChat={uiNewChat}
-        onDeleteSession={uiDeleteSession}
+        onDeleteSession={(id) => { if (!studioOpen) discardSession(id); uiDeleteSession(id); }}
         onOpenSettings={() => {
           setDrawerOpen(false);
           setSettingsOpen(true);

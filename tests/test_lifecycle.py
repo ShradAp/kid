@@ -1,5 +1,6 @@
 import http.client
 import http.server
+import json
 import os
 from pathlib import Path
 import tempfile
@@ -79,6 +80,21 @@ class LifecycleTests(IsolatedStorageTestCase):
         self.assertEqual(spawn.call_args.kwargs["env"]["KID_BRIDGE_PORT"], "43002")
         self.assertNotIn("shell", spawn.call_args.kwargs)
         self.assertIs(self.lifecycle.frontend_process, spawn.return_value)
+
+    def test_private_node_starts_when_no_system_node_is_installed(self):
+        ui = self.root / 'UI'
+        (ui / '.next').mkdir(parents=True)
+        (ui / '.next/BUILD_ID').write_text('fixture')
+        next_cli = ui / 'node_modules/next/dist/bin/next'
+        next_cli.parent.mkdir(parents=True)
+        next_cli.write_text('fixture')
+        node = self.root / 'private-node'
+        (self.root / '.install-state.json').write_text(json.dumps({
+            'schema': 1, 'complete': True, 'node': str(node)}), encoding='utf-8-sig')
+        with patch('application.lifecycle.shutil.which', return_value=None), \
+             patch('application.lifecycle.subprocess.Popen') as spawn:
+            self.lifecycle.start_frontend(43001, 43002, 'fixture-token')
+        self.assertEqual(spawn.call_args.args[0][0], str(node / 'node.exe'))
 
     def test_failed_backend_shutdown_still_closes_socket_and_releases_lock(self):
         server = Mock()
